@@ -1,33 +1,46 @@
 """
-Rahul Fire Data Entry - Full Edition
+Rahul Fire Data Entry - Full Edition (Revised)
 Multi-user Google Sheets + Google Drive app with:
   - Single Main Admin (full control) + Employee accounts (restricted)
   - Employees can edit their OWN entries for up to 7 days; after that,
     only Admin can edit. Employees can never edit others' entries.
   - Up to 2 file attachments (JPEG/JPG/PDF) per Purchase entry and per
-    unique Challan, stored in Google Drive with names uniquely tied to
-    that exact entry (e.g. PUR-42-slot1.pdf, CH-105-slot2.jpg).
+    unique Challan, stored in Google Drive under:
+      SITE_{site_name}/Purchase  or  SITE_{site_name}/Challan
+  - File names are updated when entries are edited.
+  - On deletion, files are renamed with an EXTRA_ prefix instead of being deleted.
+  - Mobile-friendly UI and role-restricted navigation.
+  - Employees cannot export Excel.
 
-SHEET SCHEMA CHANGES NEEDED (add these columns to the END of each header row):
-  Purchases tab header becomes:
+SHEET SCHEMA (must match exactly):
+  Purchases:
     id | entry_date | purchaser | vendor | invoice_no | amount | payment_mode |
     payment_detail | payment_date | site_name | challan_number | notes |
     created_by | created_at | file1_link | file2_link
 
-  Challans tab header becomes:
+  Challans:
     id | challan_number | challan_date | site_name | vehicle_number | driver_name |
     created_by | created_at | file1_link | file2_link
 
-  ChallanItems tab header stays:
+  ChallanItems:
     id | challan_id | sr_no | description | qty_nos | qty_meters | billable | created_by
 
-  Users tab header stays:
+  Users:
     username | password_hash | full_name | role
 
-NEW ENVIRONMENT VARIABLE (optional, has a default):
-  GOOGLE_DRIVE_FOLDER_NAME = Rahul Fire Data Entry - Attachments
+ENVIRONMENT VARIABLES:
+  GOOGLE_CREDENTIALS_JSON   (required)
+  APP_USERNAME              (Main Admin username)
+  APP_PASSWORD_HASH         (Main Admin password hash)
+  GOOGLE_DRIVE_FOLDER_NAME  (optional, default: "Rahul Fire Data Entry - Attachments")
+  GOOGLE_SHEET_NAME         (optional, default: "Rahul Fire Data Entry - Database")
 
-NEW PACKAGE NEEDED in requirements.txt:
+requirements.txt must include:
+  flask
+  gunicorn
+  openpyxl
+  gspread
+  google-auth
   google-api-python-client
 """
 
@@ -37,6 +50,7 @@ import json
 import hashlib
 import secrets
 import threading
+import re as _re
 from functools import wraps
 from datetime import datetime, timedelta, timezone
 from flask import Flask, request, redirect, url_for, send_file, session, render_template_string
@@ -51,13 +65,21 @@ ALLOWED_EXTENSIONS = {"jpg", "jpeg", "pdf"}
 PAYMENT_MODES = ["Cash", "Bank Transfer", "UPI", "Cheque", "Credit Card", "Debit Card"]
 BILLABLE_OPTIONS = ["Billable", "Non-Billable"]
 
-PURCHASE_HEADERS = ["id","entry_date","purchaser","vendor","invoice_no","amount","payment_mode",
-                     "payment_detail","payment_date","site_name","challan_number","notes",
-                     "created_by","created_at","file1_link","file2_link"]
-CHALLAN_HEADERS = ["id","challan_number","challan_date","site_name","vehicle_number","driver_name",
-                    "created_by","created_at","file1_link","file2_link"]
-ITEM_HEADERS = ["id","challan_id","sr_no","description","qty_nos","qty_meters","billable","created_by"]
-USER_HEADERS = ["username","password_hash","full_name","role"]
+PURCHASE_HEADERS = [
+    "id", "entry_date", "purchaser", "vendor", "invoice_no", "amount",
+    "payment_mode", "payment_detail", "payment_date", "site_name",
+    "challan_number", "notes", "created_by", "created_at", "file1_link", "file2_link"
+]
+CHALLAN_HEADERS = [
+    "id", "challan_number", "challan_date", "site_name",
+    "vehicle_number", "driver_name", "created_by", "created_at",
+    "file1_link", "file2_link"
+]
+ITEM_HEADERS = [
+    "id", "challan_id", "sr_no", "description",
+    "qty_nos", "qty_meters", "billable", "created_by"
+]
+USER_HEADERS = ["username", "password_hash", "full_name", "role"]
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", secrets.token_hex(32))
@@ -81,8 +103,7 @@ def verify_password(password, stored):
     except Exception:
         return False
 
-
-# ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
 # Google Sheets & Drive connections
 # ---------------------------------------------------------------------------
 _gs_client = None
@@ -102,7 +123,10 @@ def get_sheet():
     if not creds_json:
         raise RuntimeError("GOOGLE_CREDENTIALS_JSON environment variable is not set.")
     creds_dict = json.loads(creds_json)
-    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     _gs_client = gspread.authorize(creds)
     _sheet = _gs_client.open(sheet_name)
@@ -128,7 +152,10 @@ def get_drive_folder_id():
     if _drive_folder_id:
         return _drive_folder_id
     service = get_drive_service()
-    folder_name = os.environ.get("GOOGLE_DRIVE_FOLDER_NAME", "Rahul Fire Data Entry - Attachments")
+    folder_name = os.environ.get(
+        "GOOGLE_DRIVE_FOLDER_NAME",
+        "Rahul Fire Data Entry - Attachments"
+    )
     query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
     results = service.files().list(q=query, fields="files(id, name)").execute()
     files = results.get("files", [])
@@ -141,23 +168,107 @@ def get_drive_folder_id():
     return _drive_folder_id
 
 
-def upload_file_to_drive(file_obj, filename, mimetype):
-    from googleapiclient.http import MediaIoBaseUpload
+def get_site_folder_id(site_name):
+    """
+    Get or create a Drive folder named 'SITE_{site_name}'.
+    Returns the folder ID.
+    """
     service = get_drive_service()
-    folder_id = get_drive_folder_id()
-    query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
+    folder_name = f"SITE_{site_name}"
+    query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+    results = service.files().list(q=query, fields="files(id, name)").execute()
+    files = results.get("files", [])
+    if files:
+        return files[0]["id"]
+    parent_id = get_drive_folder_id()
+    metadata = {
+        "name": folder_name,
+        "mimeType": "application/vnd.google-apps.folder",
+        "parents": [parent_id]
+    }
+    folder = service.files().create(body=metadata, fields="id").execute()
+    return folder["id"]
+
+
+def get_or_create_subfolder(parent_id, name):
+    """
+    Get or create a subfolder with given name under parent_id.
+    Returns the subfolder ID.
+    """
+    service = get_drive_service()
+    query = f"name='{name}' and mimeType='application/vnd.google-apps.folder' and trashed=false and '{parent_id}' in parents"
+    results = service.files().list(q=query, fields="files(id)").execute()
+    files = results.get("files", [])
+    if files:
+        return files[0]["id"]
+    metadata = {
+        "name": name,
+        "mimeType": "application/vnd.google-apps.folder",
+        "parents": [parent_id]
+    }
+    folder = service.files().create(body=metadata, fields="id").execute()
+    return folder["id"]
+
+
+def rename_drive_file(file_id, new_name):
+    """
+    Rename an existing Drive file to new_name.
+    """
+    service = get_drive_service()
+    service.files().update(fileId=file_id, body={"name": new_name}).execute()
+
+
+def extract_drive_file_id(file_url):
+    """
+    Extract Drive file ID from a URL like:
+    https://drive.google.com/file/d/FILE_ID/view
+    Returns FILE_ID or None if not found.
+    """
+    if not file_url:
+        return None
+    try:
+        parts = file_url.split("/d/")
+        if len(parts) < 2:
+            return None
+        file_id_part = parts[1].split("/")[0]
+        return file_id_part
+    except Exception:
+        return None
+
+
+def upload_file_to_drive_with_site(file_obj, filename, mimetype, site_name, entry_type):
+    """
+    Upload a file to Drive under:
+      SITE_{site_name}/Purchase  or  SITE_{site_name}/Challan
+    entry_type: "PUR" or "CH"
+    If a file with the same name exists in that folder, overwrite it.
+    Returns the public viewer URL.
+    """
+    service = get_drive_service()
+    site_folder_id = get_site_folder_id(site_name)
+    subfolder_name = "Purchase" if entry_type == "PUR" else "Challan"
+    subfolder_id = get_or_create_subfolder(site_folder_id, subfolder_name)
+
+    query = f"name='{filename}' and trashed=false and '{subfolder_id}' in parents"
     results = service.files().list(q=query, fields="files(id)").execute()
     existing = results.get("files", [])
+
     file_bytes = file_obj.read()
+    from googleapiclient.http import MediaIoBaseUpload
     media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mimetype, resumable=False)
+
     if existing:
         file_id = existing[0]["id"]
         service.files().update(fileId=file_id, media_body=media).execute()
     else:
-        metadata = {"name": filename, "parents": [folder_id]}
+        metadata = {"name": filename, "parents": [subfolder_id]}
         created = service.files().create(body=metadata, media_body=media, fields="id").execute()
         file_id = created["id"]
-    service.permissions().create(fileId=file_id, body={"type": "anyone", "role": "reader"}).execute()
+        service.permissions().create(
+            fileId=file_id,
+            body={"type": "anyone", "role": "reader"}
+        ).execute()
+
     return f"https://drive.google.com/file/d/{file_id}/view"
 
 
@@ -180,12 +291,19 @@ def generate_attachment_filename(entry_type, entry_id, slot_number, original_fil
     return f"{entry_type}-{safe_entry_id}-slot{slot_number}.{ext}"
 
 
-def process_file_uploads(files, entry_type, entry_id):
-    """files: request.files.getlist('attachments'). Returns (file1_link, file2_link, error)."""
+def process_file_uploads_with_site(files, entry_type, entry_id, site_name):
+    """
+    files: request.files.getlist('attachments')
+    entry_type: "PUR" or "CH"
+    entry_id: purchase ID or challan number (string)
+    site_name: site name from the entry
+    Returns (file1_link, file2_link, error)
+    """
     real_files = [f for f in files if f and f.filename]
     ok, err = validate_uploaded_files(real_files)
     if not ok:
         return None, None, err
+
     links = [None, None]
     for i, f in enumerate(real_files[:MAX_FILES_PER_ENTRY]):
         slot = i + 1
@@ -193,13 +311,66 @@ def process_file_uploads(files, entry_type, entry_id):
         ext = fname.rsplit(".", 1)[-1]
         mimetype = "application/pdf" if ext == "pdf" else "image/jpeg"
         try:
-            link = upload_file_to_drive(f, fname, mimetype)
+            link = upload_file_to_drive_with_site(f, fname, mimetype, site_name, entry_type)
             links[i] = link
         except Exception as e:
             return None, None, f"File upload failed: {e}"
     return links[0], links[1], None
 
 
+def rename_files_for_purchase_edit(row_id, old_row, new_row):
+    """
+    When a purchase entry is edited, rename associated Drive files to match the new entry ID.
+    """
+    for slot, old_link in [(1, old_row.get("file1_link")), (2, old_row.get("file2_link"))]:
+        if not old_link:
+            continue
+        file_id = extract_drive_file_id(old_link)
+        if not file_id:
+            continue
+        old_name_parts = old_link.split("/")[-1].split(".")
+        ext = old_name_parts[-1] if len(old_name_parts) > 1 else "bin"
+        new_name = f"PUR-{row_id}-slot{slot}.{ext}"
+        rename_drive_file(file_id, new_name)
+
+
+def rename_files_for_challan_edit(challan_number, old_row, new_row):
+    """
+    When a challan header is edited, rename associated Drive files to match the (possibly) new challan number.
+    """
+    for slot, old_link in [(1, old_row.get("file1_link")), (2, old_row.get("file2_link"))]:
+        if not old_link:
+            continue
+        file_id = extract_drive_file_id(old_link)
+        if not file_id:
+            continue
+        safe_ch = "".join(c for c in str(challan_number) if c.isalnum() or c in "-_")
+        old_name_parts = old_link.split("/")[-1].split(".")
+        ext = old_name_parts[-1] if len(old_name_parts) > 1 else "bin"
+        new_name = f"CH-{safe_ch}-slot{slot}.{ext}"
+        rename_drive_file(file_id, new_name)
+
+
+def rename_files_for_delete(entry_type, old_row):
+    """
+    When an entry is deleted, rename its Drive files with an 'EXTRA_' prefix instead of deleting them.
+    """
+    id_value = old_row.get("id") if entry_type == "PUR" else old_row.get("challan_number")
+    for slot, old_link in [(1, old_row.get("file1_link")), (2, old_row.get("file2_link"))]:
+        if not old_link:
+            continue
+        file_id = extract_drive_file_id(old_link)
+        if not file_id:
+            continue
+        old_name_parts = old_link.split("/")[-1].split(".")
+        ext = old_name_parts[-1] if len(old_name_parts) > 1 else "bin"
+        safe_id = "".join(c for c in str(id_value) if c.isalnum() or c in "-_")
+        new_name = f"EXTRA-{entry_type}-{safe_id}-slot{slot}.{ext}"
+        rename_drive_file(file_id, new_name)
+
+  # ---------------------------------------------------------------------------
+# Google Sheets helpers
+# ---------------------------------------------------------------------------
 def get_ws(tab_name):
     return get_sheet().worksheet(tab_name)
 
@@ -237,7 +408,7 @@ def update_row_by_id(tab_name, headers, row_id, row_dict):
     if idx is None:
         raise ValueError(f"Row with id={row_id} not found in {tab_name}")
     row = [row_dict.get(h, "") for h in headers]
-    ws.update(f"A{idx}:{chr(64+len(headers))}{idx}", [row])
+    ws.update(f"A{idx}:{chr(64 + len(headers))}{idx}", [row])
 
 
 def delete_row_by_id(tab_name, row_id):
@@ -260,7 +431,11 @@ def get_all_users():
 def verify_user_login(username, password):
     for u in get_all_users():
         if u.get("username") == username and verify_password(password, u.get("password_hash", "")):
-            return {"username": u["username"], "full_name": u.get("full_name", u["username"]), "role": u.get("role", "Employee")}
+            return {
+                "username": u["username"],
+                "full_name": u.get("full_name", u["username"]),
+                "role": u.get("role", "Employee")
+            }
     admin_user = os.environ.get("APP_USERNAME", "")
     admin_hash = os.environ.get("APP_PASSWORD_HASH", "")
     if admin_user and username == admin_user and verify_password(password, admin_hash):
@@ -275,7 +450,12 @@ def add_user(username, password, full_name, role="Employee"):
     if len(users) >= 20:
         return False, "Maximum of 20 users reached."
     pw_hash = hash_password(password)
-    append_row("Users", USER_HEADERS, {"username": username, "password_hash": pw_hash, "full_name": full_name, "role": role})
+    append_row("Users", USER_HEADERS, {
+        "username": username,
+        "password_hash": pw_hash,
+        "full_name": full_name,
+        "role": role
+    })
     return True, "User created."
 
 
@@ -360,6 +540,10 @@ def current_user():
 
 def is_admin():
     return session.get("role") == "Admin"
+
+
+def is_employee():
+    return session.get("role") == "Employee"
 
 
 def can_modify_entry(row_created_by, row_created_at_iso):
@@ -477,15 +661,14 @@ def delete_employee(name):
                 break
         return True, f"Employee '{name}' deleted."
 
-
-# ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
 # Purchases
 # ---------------------------------------------------------------------------
 def get_purchases(site_name=None):
     records = read_all_records("Purchases")
     if site_name and site_name != "ALL SITES":
         records = [r for r in records if r.get("site_name") == site_name]
-    records.sort(key=lambda r: (str(r.get("entry_date", "")), int(r.get("id", 0)) if str(r.get("id","")).isdigit() else 0))
+    records.sort(key=lambda r: (str(r.get("entry_date", "")), int(r.get("id", 0)) if str(r.get("id", "")).isdigit() else 0))
     return records
 
 
@@ -499,7 +682,7 @@ def check_duplicate_purchase(entry_date, vendor, invoice_no, amount, exclude_id=
     return False
 
 
-def insert_purchase(record, created_by):
+def insert_purchase(record, created_by, files=None):
     with WRITE_LOCK:
         row_id = next_id("Purchases")
         record["id"] = row_id
@@ -507,23 +690,56 @@ def insert_purchase(record, created_by):
         record["created_at"] = now_iso()
         record.setdefault("file1_link", "")
         record.setdefault("file2_link", "")
+
+        if files:
+            real_files = [f for f in files if f and f.filename]
+            if real_files:
+                f1, f2, uerr = process_file_uploads_with_site(
+                    real_files, "PUR", str(row_id), record["site_name"]
+                )
+                if uerr:
+                    raise ValueError(uerr)
+                if f1:
+                    record["file1_link"] = f1
+                if f2:
+                    record["file2_link"] = f2
+
         append_row("Purchases", PURCHASE_HEADERS, record)
         return row_id
 
 
-def update_purchase(row_id, record):
+def update_purchase(row_id, record, files=None):
     with WRITE_LOCK:
         existing = get_purchase_row(row_id)
         record["id"] = row_id
         record["created_by"] = existing.get("created_by", "") if existing else ""
         record["created_at"] = existing.get("created_at", "") if existing else ""
-        record["file1_link"] = record.get("file1_link") or (existing.get("file1_link", "") if existing else "")
-        record["file2_link"] = record.get("file2_link") or (existing.get("file2_link", "") if existing else "")
+
+        if files:
+            real_files = [f for f in files if f and f.filename]
+            if real_files:
+                f1, f2, uerr = process_file_uploads_with_site(
+                    real_files, "PUR", str(row_id), record["site_name"]
+                )
+                if uerr:
+                    raise ValueError(uerr)
+                if f1:
+                    record["file1_link"] = f1
+                if f2:
+                    record["file2_link"] = f2
+        else:
+            record["file1_link"] = record.get("file1_link") or (existing.get("file1_link", "") if existing else "")
+            record["file2_link"] = record.get("file2_link") or (existing.get("file2_link", "") if existing else "")
+
+        rename_files_for_purchase_edit(row_id, existing or {}, record)
         update_row_by_id("Purchases", PURCHASE_HEADERS, row_id, record)
 
 
 def delete_purchase(row_id):
     with WRITE_LOCK:
+        existing = get_purchase_row(row_id)
+        if existing:
+            rename_files_for_delete("PUR", existing)
         delete_row_by_id("Purchases", row_id)
 
 
@@ -537,9 +753,6 @@ def get_purchase_row(row_id):
 # ---------------------------------------------------------------------------
 # Challans
 # ---------------------------------------------------------------------------
-import re as _re
-
-
 def _numeric_key(challan_no):
     m = _re.search(r"\d+", str(challan_no or ""))
     return int(m.group()) if m else 0
@@ -561,28 +774,72 @@ def get_or_create_challan(challan_number, challan_date, site_name, vehicle_numbe
         for r in records:
             if r.get("challan_number") == challan_number:
                 update_row_by_id("Challans", CHALLAN_HEADERS, r["id"], {
-                    "id": r["id"], "challan_number": challan_number, "challan_date": challan_date,
-                    "site_name": site_name, "vehicle_number": vehicle_number, "driver_name": driver_name,
-                    "created_by": r.get("created_by", created_by), "created_at": r.get("created_at", now_iso()),
-                    "file1_link": r.get("file1_link", ""), "file2_link": r.get("file2_link", "")})
+                    "id": r["id"],
+                    "challan_number": challan_number,
+                    "challan_date": challan_date,
+                    "site_name": site_name,
+                    "vehicle_number": vehicle_number,
+                    "driver_name": driver_name,
+                    "created_by": r.get("created_by", created_by),
+                    "created_at": r.get("created_at", now_iso()),
+                    "file1_link": r.get("file1_link", ""),
+                    "file2_link": r.get("file2_link", "")
+                })
                 return r["id"]
         row_id = next_id("Challans")
         append_row("Challans", CHALLAN_HEADERS, {
-            "id": row_id, "challan_number": challan_number, "challan_date": challan_date,
-            "site_name": site_name, "vehicle_number": vehicle_number, "driver_name": driver_name,
-            "created_by": created_by, "created_at": now_iso(), "file1_link": "", "file2_link": ""})
+            "id": row_id,
+            "challan_number": challan_number,
+            "challan_date": challan_date,
+            "site_name": site_name,
+            "vehicle_number": vehicle_number,
+            "driver_name": driver_name,
+            "created_by": created_by,
+            "created_at": now_iso(),
+            "file1_link": "",
+            "file2_link": ""
+        })
         return row_id
 
 
-def update_challan_header(challan_id, challan_date, site_name, vehicle_number, driver_name, file1_link=None, file2_link=None):
+def update_challan_header(challan_id, challan_date, site_name, vehicle_number, driver_name, file1_link=None, file2_link=None, files=None):
     with WRITE_LOCK:
         challan = get_challan(challan_id)
+        if not challan:
+            raise ValueError(f"Challan {challan_id} not found")
+
+        if files:
+            real_files = [f for f in files if f and f.filename]
+            if real_files:
+                f1, f2, uerr = process_file_uploads_with_site(
+                    real_files, "CH", str(challan["challan_number"]), site_name
+                )
+                if uerr:
+                    raise ValueError(uerr)
+                if f1:
+                    challan["file1_link"] = f1
+                if f2:
+                    challan["file2_link"] = f2
+        else:
+            if file1_link:
+                challan["file1_link"] = file1_link
+            if file2_link:
+                challan["file2_link"] = file2_link
+
+        rename_files_for_challan_edit(challan["challan_number"], challan, challan)
+
         update_row_by_id("Challans", CHALLAN_HEADERS, challan_id, {
-            "id": challan_id, "challan_number": challan["challan_number"], "challan_date": challan_date,
-            "site_name": site_name, "vehicle_number": vehicle_number, "driver_name": driver_name,
-            "created_by": challan.get("created_by", ""), "created_at": challan.get("created_at", ""),
-            "file1_link": file1_link if file1_link else challan.get("file1_link",""),
-            "file2_link": file2_link if file2_link else challan.get("file2_link","")})
+            "id": challan_id,
+            "challan_number": challan["challan_number"],
+            "challan_date": challan_date,
+            "site_name": site_name,
+            "vehicle_number": vehicle_number,
+            "driver_name": driver_name,
+            "created_by": challan.get("created_by", ""),
+            "created_at": challan.get("created_at", ""),
+            "file1_link": challan.get("file1_link", ""),
+            "file2_link": challan.get("file2_link", "")
+        })
 
 
 def get_challan(challan_id):
@@ -594,12 +851,15 @@ def get_challan(challan_id):
 
 def get_all_challans():
     records = read_all_records("Challans")
-    records.sort(key=lambda r: (str(r.get("challan_date","")), _numeric_key(r.get("challan_number")), str(r.get("challan_number",""))))
+    records.sort(key=lambda r: (str(r.get("challan_date", "")), _numeric_key(r.get("challan_number")), str(r.get("challan_number", ""))))
     return records
 
 
 def delete_challan(challan_id):
     with WRITE_LOCK:
+        challan = get_challan(challan_id)
+        if challan:
+            rename_files_for_delete("CH", challan)
         delete_row_by_id("Challans", challan_id)
         for it in read_all_records("ChallanItems"):
             if str(it.get("challan_id")) == str(challan_id):
@@ -618,7 +878,7 @@ def item_duplicate_in_challan(challan_id, description, qty_nos, qty_meters, excl
 
 def next_sr_no(challan_id):
     items = [it for it in read_all_records("ChallanItems") if str(it.get("challan_id")) == str(challan_id)]
-    srs = [int(it["sr_no"]) for it in items if str(it.get("sr_no","")).isdigit()]
+    srs = [int(it["sr_no"]) for it in items if str(it.get("sr_no", "")).isdigit()]
     return (max(srs) + 1) if srs else 1
 
 
@@ -629,8 +889,15 @@ def insert_challan_item(challan_id, description, qty_nos, qty_meters, billable, 
             raise ValueError("This challan already has 35 items (maximum allowed).")
         row_id = next_id("ChallanItems")
         append_row("ChallanItems", ITEM_HEADERS, {
-            "id": row_id, "challan_id": challan_id, "sr_no": sr, "description": description,
-            "qty_nos": qty_nos, "qty_meters": qty_meters, "billable": billable, "created_by": created_by})
+            "id": row_id,
+            "challan_id": challan_id,
+            "sr_no": sr,
+            "description": description,
+            "qty_nos": qty_nos,
+            "qty_meters": qty_meters,
+            "billable": billable,
+            "created_by": created_by
+        })
         return sr
 
 
@@ -638,9 +905,15 @@ def update_challan_item(item_id, description, qty_nos, qty_meters, billable):
     with WRITE_LOCK:
         item = get_challan_item(item_id)
         update_row_by_id("ChallanItems", ITEM_HEADERS, item_id, {
-            "id": item_id, "challan_id": item["challan_id"], "sr_no": item["sr_no"],
-            "description": description, "qty_nos": qty_nos, "qty_meters": qty_meters, "billable": billable,
-            "created_by": item.get("created_by", "")})
+            "id": item_id,
+            "challan_id": item["challan_id"],
+            "sr_no": item["sr_no"],
+            "description": description,
+            "qty_nos": qty_nos,
+            "qty_meters": qty_meters,
+            "billable": billable,
+            "created_by": item.get("created_by", "")
+        })
 
 
 def delete_challan_item(item_id):
@@ -657,7 +930,7 @@ def get_challan_item(item_id):
 
 def get_items_for_challan(challan_id):
     items = [it for it in read_all_records("ChallanItems") if str(it.get("challan_id")) == str(challan_id)]
-    items.sort(key=lambda r: int(r.get("sr_no", 0)) if str(r.get("sr_no","")).isdigit() else 0)
+    items.sort(key=lambda r: int(r.get("sr_no", 0)) if str(r.get("sr_no", "")).isdigit() else 0)
     return items
 
 
@@ -678,8 +951,12 @@ def get_challan_items_for_site(site_name=None):
         merged["vehicle_number"] = c.get("vehicle_number")
         merged["driver_name"] = c.get("driver_name")
         result.append(merged)
-    result.sort(key=lambda r: (str(r.get("challan_date","")), _numeric_key(r.get("challan_number")),
-                                 str(r.get("challan_number","")), int(r.get("sr_no",0)) if str(r.get("sr_no","")).isdigit() else 0))
+    result.sort(key=lambda r: (
+        str(r.get("challan_date", "")),
+        _numeric_key(r.get("challan_number")),
+        str(r.get("challan_number", "")),
+        int(r.get("sr_no", 0)) if str(r.get("sr_no", "")).isdigit() else 0
+    ))
     return result
 
 
@@ -710,7 +987,10 @@ def build_full_export_workbook():
 
     def style_header_row(ws, row_idx=1):
         for cell in ws[row_idx]:
-            cell.font = header_font; cell.fill = header_fill; cell.alignment = center; cell.border = border
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = center
+            cell.border = border
 
     def autosize(ws):
         for col_cells in ws.columns:
@@ -720,34 +1000,40 @@ def build_full_export_workbook():
     wb = openpyxl.Workbook()
     ws1 = wb.active
     ws1.title = "Purchase Entries"
-    ws1.append(["Date","Purchaser","Vendor","Invoice No.","Amount","Payment Mode","Payment Detail",
-                "Payment Date","Site","Challan No.","Notes","Entered By","File 1","File 2"])
+    ws1.append(["Date", "Purchaser", "Vendor", "Invoice No.", "Amount", "Payment Mode", "Payment Detail",
+                "Payment Date", "Site", "Challan No.", "Notes", "Entered By", "File 1", "File 2"])
     for r in get_purchases():
         ws1.append([r.get("entry_date"), r.get("purchaser"), r.get("vendor"), r.get("invoice_no"), r.get("amount"),
                     r.get("payment_mode"), r.get("payment_detail"), r.get("payment_date"), r.get("site_name"),
                     r.get("challan_number"), r.get("notes"), r.get("created_by"), r.get("file1_link"), r.get("file2_link")])
-    style_header_row(ws1); autosize(ws1); ws1.freeze_panes = "A2"
+    style_header_row(ws1)
+    autosize(ws1)
+    ws1.freeze_panes = "A2"
 
     ws2 = wb.create_sheet("Challan Items")
-    ws2.append(["Challan Number","Date","Sr No.","Description","Qty (Nos)","Qty (M)","Billable","Site","Vehicle","Driver","Entered By"])
+    ws2.append(["Challan Number", "Date", "Sr No.", "Description", "Qty (Nos)", "Qty (M)", "Billable", "Site", "Vehicle", "Driver", "Entered By"])
     for r in get_challan_items_for_site():
         ws2.append([r.get("challan_number"), r.get("challan_date"), r.get("sr_no"), r.get("description"),
                     r.get("qty_nos"), r.get("qty_meters"), r.get("billable"), r.get("site_name"),
                     r.get("vehicle_number"), r.get("driver_name"), r.get("created_by")])
-    style_header_row(ws2); autosize(ws2); ws2.freeze_panes = "A2"
+    style_header_row(ws2)
+    autosize(ws2)
+    ws2.freeze_panes = "A2"
 
     ws3 = wb.create_sheet("Challans")
-    ws3.append(["Challan Number","Date","Site","Vehicle","Driver","Entered By","File 1","File 2"])
+    ws3.append(["Challan Number", "Date", "Site", "Vehicle", "Driver", "Entered By", "File 1", "File 2"])
     for c in get_all_challans():
         ws3.append([c.get("challan_number"), c.get("challan_date"), c.get("site_name"), c.get("vehicle_number"),
                     c.get("driver_name"), c.get("created_by"), c.get("file1_link"), c.get("file2_link")])
-    style_header_row(ws3); autosize(ws3)
+    style_header_row(ws3)
+    autosize(ws3)
 
     ws4 = wb.create_sheet("Site Summary")
-    ws4.append(["Site","Total Expense","No. of Entries","No. of Challans"])
+    ws4.append(["Site", "Total Expense", "No. of Entries", "No. of Challans"])
     for r in get_site_summary():
         ws4.append([r["name"], r["total_expense"], r["n_expenses"], r["n_challans"]])
-    style_header_row(ws4); autosize(ws4)
+    style_header_row(ws4)
+    autosize(ws4)
     return wb
 
 
@@ -763,7 +1049,10 @@ def build_site_export_workbook(site_name):
 
     def style_header_row(ws, row_idx):
         for cell in ws[row_idx]:
-            cell.font = header_font; cell.fill = header_fill; cell.alignment = center; cell.border = border
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = center
+            cell.border = border
 
     def autosize(ws):
         for col_cells in ws.columns:
@@ -778,23 +1067,26 @@ def build_site_export_workbook(site_name):
     wb = openpyxl.Workbook()
     sh = wb.active
     sh.title = site_name[:31]
-    sh.append([f"SITE: {site_name}"]); sh["A1"].font = Font(bold=True, size=14, color="7A1F1F")
+    sh.append([f"SITE: {site_name}"])
+    sh["A1"].font = Font(bold=True, size=14, color="7A1F1F")
     sh.append([f"Total Purchase/Expense: {total:,.2f}    |    Unique Challans: {n_challans}"])
     sh["A2"].font = sub_font
     sh.append([])
-    sh.append(["-- PURCHASE / EXPENSE ENTRIES --"]); sh[sh.max_row][0].font = sub_font
+    sh.append(["-- PURCHASE / EXPENSE ENTRIES --"])
+    sh[sh.max_row][0].font = sub_font
     header_row_1 = sh.max_row + 1
-    sh.append(["Date","Purchaser","Vendor","Invoice No.","Amount","Payment Mode","Payment Detail",
-                "Payment Date","Challan No.","Notes","Entered By","File 1","File 2"])
+    sh.append(["Date", "Purchaser", "Vendor", "Invoice No.", "Amount", "Payment Mode", "Payment Detail",
+                "Payment Date", "Challan No.", "Notes", "Entered By", "File 1", "File 2"])
     for p in purchases:
         sh.append([p.get("entry_date"), p.get("purchaser"), p.get("vendor"), p.get("invoice_no"), p.get("amount"),
                    p.get("payment_mode"), p.get("payment_detail"), p.get("payment_date"), p.get("challan_number"),
                    p.get("notes"), p.get("created_by"), p.get("file1_link"), p.get("file2_link")])
     style_header_row(sh, header_row_1)
     sh.append([])
-    sh.append(["-- CHALLAN ITEMS --"]); sh[sh.max_row][0].font = sub_font
+    sh.append(["-- CHALLAN ITEMS --"])
+    sh[sh.max_row][0].font = sub_font
     header_row_2 = sh.max_row + 1
-    sh.append(["Challan Number","Date","Sr No.","Description","Qty (Nos)","Qty (M)","Billable","Vehicle","Driver","Entered By"])
+    sh.append(["Challan Number", "Date", "Sr No.", "Description", "Qty (Nos)", "Qty (M)", "Billable", "Vehicle", "Driver", "Entered By"])
     for it in items:
         sh.append([it.get("challan_number"), it.get("challan_date"), it.get("sr_no"), it.get("description"),
                    it.get("qty_nos"), it.get("qty_meters"), it.get("billable"), it.get("vehicle_number"),
@@ -805,48 +1097,64 @@ def build_site_export_workbook(site_name):
 
 
 # ---------------------------------------------------------------------------
-# HTML helpers
+# HTML helpers & mobile-friendly UI
 # ---------------------------------------------------------------------------
 def NAV():
     role = session.get("role", "")
-    admin_link = '<a href="/users" style="color:#fff;text-decoration:none;margin-right:16px;">Manage Users</a>' if role == "Admin" else ""
+    # Base links visible to everyone
+    nav_links = f"""
+    <a href="/" style="color:#fff;text-decoration:none;margin-right:16px;">Home</a>
+    <a href="/purchase" style="color:#fff;text-decoration:none;margin-right:16px;">Purchase</a>
+    <a href="/challans" style="color:#fff;text-decoration:none;margin-right:16px;">Challans</a>
+    <a href="/site_view" style="color:#fff;text-decoration:none;margin-right:16px;">Site-wise</a>
+    """
+    # Admin-only links
+    if role == "Admin":
+        nav_links += f"""
+        <a href="/sites" style="color:#fff;text-decoration:none;margin-right:16px;">Sites</a>
+        <a href="/employees" style="color:#fff;text-decoration:none;margin-right:16px;">Employees</a>
+        <a href="/users" style="color:#fff;text-decoration:none;margin-right:16px;">Users</a>
+        <a href="/export" style="color:#fff;text-decoration:none;margin-right:16px;">Export</a>
+        """
+    # User info and logout
+    nav_links += f"""
+    <span style="color:#ffd6d6;margin-left:auto;">
+      {escape(session.get('full_name', ''))} ({escape(session.get('role', ''))}) |
+      <a href="/logout" style="color:#ffd6d6;text-decoration:none;">Logout</a>
+    </span>
+    """
     return f"""
-    <div style="background:#7A1F1F;padding:12px 20px;">
-      <a href="/" style="color:#fff;font-weight:bold;text-decoration:none;margin-right:20px;">{APP_TITLE}</a>
-      <a href="/purchase" style="color:#fff;text-decoration:none;margin-right:16px;">Purchase</a>
-      <a href="/challans" style="color:#fff;text-decoration:none;margin-right:16px;">Challans</a>
-      <a href="/sites" style="color:#fff;text-decoration:none;margin-right:16px;">Sites</a>
-      <a href="/employees" style="color:#fff;text-decoration:none;margin-right:16px;">Employees</a>
-      <a href="/site_view" style="color:#fff;text-decoration:none;margin-right:16px;">Site-wise View</a>
-      <a href="/export" style="color:#fff;text-decoration:none;margin-right:16px;">Export</a>
-      {admin_link}
-      <span style="color:#ffd6d6;float:right;">{escape(session.get('full_name',''))} ({escape(session.get('role',''))}) |
-      <a href="/logout" style="color:#ffd6d6;text-decoration:none;">Logout</a></span>
-    </div>"""
+    <nav style="background:#1a1a1a;color:#fff;padding:0.5rem 0.75rem;display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;">
+      <div style="font-weight:700;margin-right:0.5rem;">{escape(APP_TITLE)}</div>
+      {nav_links}
+    </nav>
+    """
 
 
 STYLE = """
 <style>
-body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#f7f7f7;color:#222;}
-.container{padding:20px;max-width:1400px;margin:auto;}
-h2{color:#7A1F1F;}
-table{border-collapse:collapse;width:100%;background:#fff;margin-top:10px;}
-th,td{border:1px solid #ddd;padding:6px 10px;font-size:13px;text-align:left;}
+body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#f5f5f5;color:#222;}
+.container{padding:0.75rem;max-width:1100px;margin:auto;}
+h2{color:#7A1F1F;margin:0.5rem 0;}
+table{border-collapse:collapse;width:100%;background:#fff;margin-top:0.5rem;font-size:0.85rem;}
+th,td{border:1px solid #ddd;padding:0.4rem;text-align:left;}
 th{background:#7A1F1F;color:#fff;}
 tr:nth-child(even){background:#fafafa;}
 form.inline{display:inline;}
-.card{background:#fff;padding:16px;border-radius:6px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,0.1);}
-input,select,textarea{padding:6px;margin:4px 0;border:1px solid #ccc;border-radius:4px;font-family:inherit;}
-button{background:#7A1F1F;color:#fff;border:none;padding:7px 14px;border-radius:4px;cursor:pointer;}
+.card{background:#fff;border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,0.08);padding:0.75rem;margin-bottom:0.75rem;}
+input,select,textarea{width:100%;padding:0.4rem;margin:0.2rem 0 0.5rem;border-radius:4px;border:1px solid #ccc;font-family:inherit;font-size:0.9rem;}
+button{background:#7A1F1F;color:#fff;border:none;padding:0.4rem 0.8rem;border-radius:4px;cursor:pointer;font-size:0.9rem;}
 button.secondary{background:#888;}
 button.danger{background:#b00020;}
 button.edit{background:#1F6F4A;}
 button:disabled{background:#ccc;cursor:not-allowed;}
-.msg{padding:10px;background:#e9fdf0;border:1px solid #7ac98e;border-radius:4px;margin-bottom:10px;}
+.msg{padding:0.5rem;background:#e9fdf0;border:1px solid #7ac98e;border-radius:4px;margin-bottom:0.5rem;font-size:0.9rem;}
 .msg.error{background:#fde9e9;border-color:#e08a8a;}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:0.5rem;}
 .actions{white-space:nowrap;}
 .filelink{color:#1F6F4A;text-decoration:underline;}
+.btn{display:inline-block;background:#1a7f37;color:#fff;padding:0.4rem 0.8rem;border-radius:4px;text-decoration:none;font-size:0.9rem;}
+.scroll-table{overflow-x:auto;}
 </style>
 """
 
@@ -865,7 +1173,6 @@ def file_links_html(file1, file2):
         parts.append(f'<a class="filelink" href="{escape(file2)}" target="_blank">File 2</a>')
     return " | ".join(parts) if parts else "-"
 
-
 # ---------------------------------------------------------------------------
 # Routes: Dashboard
 # ---------------------------------------------------------------------------
@@ -873,11 +1180,26 @@ def file_links_html(file1, file2):
 @login_required
 def dashboard():
     summary = get_site_summary()
-    rows = "".join(f"<tr><td>{escape(r['name'])}</td><td>{r['total_expense']:,.2f}</td>"
-                    f"<td>{r['n_expenses']}</td><td>{r['n_challans']}</td></tr>" for r in summary)
-    body = f"""<div class="card"><p>Logged in as <b>{escape(session.get('full_name',''))}</b> ({escape(session.get('role',''))}).
-    Employees can edit their own entries for {EDIT_WINDOW_DAYS} days; after that only the Main Admin can edit them.</p></div>
-    <table><tr><th>Site</th><th>Total Expense</th><th>Purchase Entries</th><th>Unique Challans</th></tr>{rows}</table>"""
+    rows = "".join(
+        f"<tr><td>{escape(r['name'])}</td><td>{r['total_expense']:,.2f}</td>"
+        f"<td>{r['n_expenses']}</td><td>{r['n_challans']}</td></tr>"
+        for r in summary
+    )
+    body = f"""
+        <div class="card">
+      <p>Logged in as <b>{escape(session.get('full_name', ''))}</b> ({escape(session.get('role', ''))}).
+         Employees can edit their own entries for {EDIT_WINDOW_DAYS} days; after that only the Main Admin can edit them.</p>
+    </div>
+    <div class="card">
+      <h3>Site Summary</h3>
+      <div class="scroll-table">
+        <table>
+          <tr><th>Site</th><th>Total Expense</th><th>Purchase Entries</th><th>Unique Challans</th></tr>
+          {rows}
+        </table>
+      </div>
+    </div>
+    """
     return page("Dashboard", body)
 
 
@@ -891,10 +1213,10 @@ def users_page():
     if request.method == "POST":
         action = request.form.get("action")
         if action == "add":
-            username = request.form.get("username","").strip()
-            password = request.form.get("password","").strip()
-            full_name = request.form.get("full_name","").strip()
-            role = request.form.get("role","Employee")
+            username = request.form.get("username", "").strip()
+            password = request.form.get("password", "").strip()
+            full_name = request.form.get("full_name", "").strip()
+            role = request.form.get("role", "Employee")
             if not username or not password or not full_name:
                 msg, msg_type = "Username, password, and full name are required.", "error"
             else:
@@ -906,13 +1228,14 @@ def users_page():
     users = get_all_users()
     rows = ""
     for u in users:
-        rows += f"""<tr><td>{escape(u['username'])}</td><td>{escape(u.get('full_name',''))}</td><td>{escape(u.get('role',''))}</td>
+        rows += f"""<tr><td>{escape(u['username'])}</td><td>{escape(u.get('full_name', ''))}</td>
+        <td>{escape(u.get('role', ''))}</td>
         <td><form method="post" onsubmit="return confirm('Delete user {escape(u['username'])}?');">
         <input type="hidden" name="action" value="delete"><input type="hidden" name="username" value="{escape(u['username'])}">
         <button type="submit" class="danger">Delete</button></form></td></tr>"""
 
     body = f"""<div class="card"><h3>Add New Employee Login ({len(users)}/20 used)</h3>
-    <p style="font-size:12px;color:#666;">Only the Main Admin role has full control. Employee accounts can add
+    <p style="font-size:0.85rem;color:#666;">Only the Main Admin role has full control. Employee accounts can add
     entries and edit only their OWN entries within {EDIT_WINDOW_DAYS} days.</p>
     <form method="post"><input type="hidden" name="action" value="add"><div class="grid">
     <div>Username<br><input type="text" name="username" required></div>
@@ -920,15 +1243,15 @@ def users_page():
     <div>Full Name<br><input type="text" name="full_name" required></div>
     <div>Role<br><select name="role"><option value="Employee">Employee</option><option value="Admin">Admin (full control)</option></select></div>
     </div><br><button type="submit">Create Login</button></form></div>
-    <table><tr><th>Username</th><th>Full Name</th><th>Role</th><th></th></tr>{rows}</table>"""
+    <div class="scroll-table"><table><tr><th>Username</th><th>Full Name</th><th>Role</th><th></th></tr>{rows}</table></div>"""
     return page("Manage Employee Logins", body, msg, msg_type)
 
 
 # ---------------------------------------------------------------------------
-# Routes: Sites / Employees CRUD
+# Routes: Sites / Employees CRUD (Admin only)
 # ---------------------------------------------------------------------------
 @app.route("/sites", methods=["GET", "POST"])
-@login_required
+@admin_required
 def sites_page():
     msg, msg_type = None, "ok"
     if request.method == "POST":
@@ -960,12 +1283,12 @@ def sites_page():
     <form method="post"><input type="hidden" name="action" value="add">
     <input type="text" name="name" placeholder="New site name" required>
     <button type="submit">Add Site</button></form></div>
-    <table><tr><th>Site Name</th><th>Rename</th><th>Delete</th></tr>{rows}</table>"""
+    <div class="scroll-table"><table><tr><th>Site Name</th><th>Rename</th><th>Delete</th></tr>{rows}</table></div>"""
     return page("Manage Sites", body, msg, msg_type)
 
 
 @app.route("/employees", methods=["GET", "POST"])
-@login_required
+@admin_required
 def employees_page():
     msg, msg_type = None, "ok"
     if request.method == "POST":
@@ -993,13 +1316,59 @@ def employees_page():
     <form method="post"><input type="hidden" name="action" value="add">
     <input type="text" name="name" placeholder="New employee name" required>
     <button type="submit">Add Employee</button></form></div>
-    <table><tr><th>Employee Name</th><th>Rename</th><th>Delete</th></tr>{rows}</table>"""
+    <div class="scroll-table"><table><tr><th>Employee Name</th><th>Rename</th><th>Delete</th></tr>{rows}</table></div>"""
     return page("Manage Employees", body, msg, msg_type)
 
-
-# ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
 # Routes: Purchase (with file upload + permission-gated editing)
 # ---------------------------------------------------------------------------
+def render_purchase_form_and_table():
+    sites_opts = "".join(f'<option value="{escape(s)}">{escape(s)}</option>' for s in get_sites())
+    emp_opts = "".join(f'<option value="{escape(e)}">{escape(e)}</option>' for e in get_employees())
+    pm_opts = "".join(f'<option value="{p}">{p}</option>' for p in PAYMENT_MODES)
+    today = datetime.today().strftime("%Y-%m-%d")
+
+    form = f"""<div class="card"><h3>New Entry</h3>
+    <form method="post" enctype="multipart/form-data">
+    <input type="hidden" name="action" value="add"><div class="grid">
+    <div>Date<br><input type="date" name="entry_date" value="{today}" required></div>
+    <div>Purchaser<br><select name="purchaser">{emp_opts}</select></div>
+    <div>Vendor/Details<br><input type="text" name="vendor"></div>
+    <div>Invoice No.<br><input type="text" name="invoice_no"></div>
+    <div>Amount (with GST)<br><input type="number" step="0.01" name="amount"></div>
+    <div>Payment Mode<br><select name="payment_mode">{pm_opts}</select></div>
+    <div>Payment Detail<br><input type="text" name="payment_detail"></div>
+    <div>Payment Date<br><input type="date" name="payment_date" value="{today}"></div>
+    <div>Site Name<br><select name="site_name">{sites_opts}</select></div>
+    <div>Challan Number<br><input type="text" name="challan_number"></div>
+    <div style="grid-column: span 2;">Notes / Remarks<br><textarea name="notes" rows="2" style="width:100%;"></textarea></div>
+    <div style="grid-column: span 2;">Attach up to 2 files (JPG/JPEG/PDF)<br>
+    <input type="file" name="attachments" accept=".jpg,.jpeg,.pdf">
+    <input type="file" name="attachments" accept=".jpg,.jpeg,.pdf"></div>
+    </div><br><button type="submit">Add Entry</button></form></div>"""
+
+    rows = ""
+    for r in get_purchases():
+        allowed, _ = can_modify_entry(r.get("created_by", ""), r.get("created_at", ""))
+        edit_btn = f'<a href="/purchase/{r.get("id")}/edit"><button type="button" class="edit">Edit</button></a>' if allowed else '<button type="button" disabled>Locked</button>'
+        del_btn = (f'<form class="inline" method="post" onsubmit="return confirm(\'Delete this entry?\');">'
+                   f'<input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="{r.get("id")}">'
+                   f'<button type="submit" class="danger">Delete</button></form>') if allowed else ""
+        rows += f"""<tr><td>{r.get('id')}</td><td>{escape(str(r.get('entry_date') or ''))}</td>
+        <td>{escape(str(r.get('purchaser') or ''))}</td><td>{escape(str(r.get('vendor') or ''))}</td>
+        <td>{escape(str(r.get('invoice_no') or ''))}</td><td>{float(r.get('amount') or 0):,.2f}</td>
+        <td>{escape(str(r.get('payment_mode') or ''))}</td><td>{escape(str(r.get('payment_detail') or ''))}</td>
+        <td>{escape(str(r.get('payment_date') or ''))}</td><td>{escape(str(r.get('site_name') or ''))}</td>
+        <td>{escape(str(r.get('challan_number') or ''))}</td><td>{escape(str(r.get('notes') or ''))}</td>
+        <td><b>{escape(str(r.get('created_by') or ''))}</b></td>
+        <td>{file_links_html(r.get('file1_link'), r.get('file2_link'))}</td>
+        <td class="actions">{edit_btn} {del_btn}</td></tr>"""
+    table = f"""<div class="scroll-table"><table><tr><th>ID</th><th>Date</th><th>Purchaser</th><th>Vendor</th><th>Invoice</th>
+    <th>Amount</th><th>Mode</th><th>Detail</th><th>Pay Date</th><th>Site</th><th>Challan</th><th>Notes</th>
+    <th>Entered By</th><th>Files</th><th></th></tr>{rows}</table></div>"""
+    return form + table
+
+
 @app.route("/purchase", methods=["GET", "POST"])
 @login_required
 def purchase_page():
@@ -1009,7 +1378,7 @@ def purchase_page():
         if action == "delete":
             row_id = request.form.get("id")
             row = get_purchase_row(row_id)
-            allowed, reason = can_modify_entry(row.get("created_by",""), row.get("created_at","")) if row else (False, "Not found.")
+            allowed, reason = can_modify_entry(row.get("created_by", ""), row.get("created_at", "")) if row else (False, "Not found.")
             if not allowed:
                 msg, msg_type = reason, "error"
             else:
@@ -1037,71 +1406,13 @@ def purchase_page():
                     msg, msg_type = "Possible duplicate found. Submit again to confirm and add anyway.", "error"
                     return page("Purchase Entry", render_purchase_form_and_table(), msg, msg_type)
                 new_id = insert_purchase({
-                    "entry_date": date_, "purchaser": f.get("purchaser","").strip(), "vendor": vendor,
-                    "invoice_no": invoice_no, "amount": amount, "payment_mode": f.get("payment_mode","").strip(),
-                    "payment_detail": f.get("payment_detail","").strip(), "payment_date": f.get("payment_date","").strip(),
-                    "site_name": site, "challan_number": f.get("challan_number","").strip(),
-                    "notes": f.get("notes","").strip()}, current_user())
-                real_files = [x for x in files if x and x.filename]
-                if real_files:
-                    f1, f2, uerr = process_file_uploads(real_files, "PUR", new_id)
-                    if uerr:
-                        msg, msg_type = f"Entry saved, but file upload failed: {uerr}", "error"
-                    else:
-                        row = get_purchase_row(new_id)
-                        row["file1_link"] = f1 or ""
-                        row["file2_link"] = f2 or ""
-                        update_purchase(new_id, row)
-                        msg = "Entry and files added."
-                else:
-                    msg = "Entry added."
+                    "entry_date": date_, "purchaser": f.get("purchaser", "").strip(), "vendor": vendor,
+                    "invoice_no": invoice_no, "amount": amount, "payment_mode": f.get("payment_mode", "").strip(),
+                    "payment_detail": f.get("payment_detail", "").strip(), "payment_date": f.get("payment_date", "").strip(),
+                    "site_name": site, "challan_number": f.get("challan_number", "").strip(),
+                    "notes": f.get("notes", "").strip()}, current_user(), files=files)
+                msg = "Entry added."
     return page("Purchase Entry", render_purchase_form_and_table(), msg, msg_type)
-
-
-def render_purchase_form_and_table():
-    sites_opts = "".join(f'<option value="{escape(s)}">{escape(s)}</option>' for s in get_sites())
-    emp_opts = "".join(f'<option value="{escape(e)}">{escape(e)}</option>' for e in get_employees())
-    pm_opts = "".join(f'<option value="{p}">{p}</option>' for p in PAYMENT_MODES)
-    today = datetime.today().strftime("%Y-%m-%d")
-    form = f"""<div class="card"><h3>New Entry</h3>
-    <form method="post" enctype="multipart/form-data">
-    <input type="hidden" name="action" value="add"><div class="grid">
-    <div>Date<br><input type="date" name="entry_date" value="{today}" required></div>
-    <div>Purchaser<br><select name="purchaser">{emp_opts}</select></div>
-    <div>Vendor/Details<br><input type="text" name="vendor"></div>
-    <div>Invoice No.<br><input type="text" name="invoice_no"></div>
-    <div>Amount (with GST)<br><input type="number" step="0.01" name="amount"></div>
-    <div>Payment Mode<br><select name="payment_mode">{pm_opts}</select></div>
-    <div>Payment Detail<br><input type="text" name="payment_detail"></div>
-    <div>Payment Date<br><input type="date" name="payment_date" value="{today}"></div>
-    <div>Site Name<br><select name="site_name">{sites_opts}</select></div>
-    <div>Challan Number<br><input type="text" name="challan_number"></div>
-    <div style="grid-column: span 2;">Notes / Remarks<br><textarea name="notes" rows="2" style="width:100%;"></textarea></div>
-    <div style="grid-column: span 2;">Attach up to 2 files (JPG/JPEG/PDF)<br>
-    <input type="file" name="attachments" accept=".jpg,.jpeg,.pdf">
-    <input type="file" name="attachments" accept=".jpg,.jpeg,.pdf"></div>
-    </div><br><button type="submit">Add Entry</button></form></div>"""
-
-    rows = ""
-    for r in get_purchases():
-        allowed, _ = can_modify_entry(r.get("created_by",""), r.get("created_at",""))
-        edit_btn = f'<a href="/purchase/{r.get("id")}/edit"><button type="button" class="edit">Edit</button></a>' if allowed else '<button type="button" disabled>Locked</button>'
-        del_btn = (f'<form class="inline" method="post" onsubmit="return confirm(\'Delete this entry?\');">'
-                   f'<input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="{r.get("id")}">'
-                   f'<button type="submit" class="danger">Delete</button></form>') if allowed else ""
-        rows += f"""<tr><td>{r.get('id')}</td><td>{escape(str(r.get('entry_date') or ''))}</td>
-        <td>{escape(str(r.get('purchaser') or ''))}</td><td>{escape(str(r.get('vendor') or ''))}</td>
-        <td>{escape(str(r.get('invoice_no') or ''))}</td><td>{float(r.get('amount') or 0):,.2f}</td>
-        <td>{escape(str(r.get('payment_mode') or ''))}</td><td>{escape(str(r.get('payment_detail') or ''))}</td>
-        <td>{escape(str(r.get('payment_date') or ''))}</td><td>{escape(str(r.get('site_name') or ''))}</td>
-        <td>{escape(str(r.get('challan_number') or ''))}</td><td>{escape(str(r.get('notes') or ''))}</td>
-        <td><b>{escape(str(r.get('created_by') or ''))}</b></td>
-        <td>{file_links_html(r.get('file1_link'), r.get('file2_link'))}</td>
-        <td class="actions">{edit_btn} {del_btn}</td></tr>"""
-    table = f"""<table><tr><th>ID</th><th>Date</th><th>Purchaser</th><th>Vendor</th><th>Invoice</th>
-    <th>Amount</th><th>Mode</th><th>Detail</th><th>Pay Date</th><th>Site</th><th>Challan</th><th>Notes</th>
-    <th>Entered By</th><th>Files</th><th></th></tr>{rows}</table>"""
-    return form + table
 
 
 @app.route("/purchase/<row_id>/edit", methods=["GET", "POST"])
@@ -1110,7 +1421,7 @@ def purchase_edit(row_id):
     row = get_purchase_row(row_id)
     if not row:
         return redirect(url_for("purchase_page"))
-    allowed, reason = can_modify_entry(row.get("created_by",""), row.get("created_at",""))
+    allowed, reason = can_modify_entry(row.get("created_by", ""), row.get("created_at", ""))
     if not allowed:
         return page("Cannot Edit", f"<p>{escape(reason)}</p><p><a href='/purchase'>Back</a></p>", reason, "error")
 
@@ -1133,24 +1444,28 @@ def purchase_edit(row_id):
                 msg, msg_type = ferr, "error"
             else:
                 record = {
-                    "entry_date": date_, "purchaser": f.get("purchaser","").strip(), "vendor": f.get("vendor","").strip(),
-                    "invoice_no": f.get("invoice_no","").strip(), "amount": amount, "payment_mode": f.get("payment_mode","").strip(),
-                    "payment_detail": f.get("payment_detail","").strip(), "payment_date": f.get("payment_date","").strip(),
-                    "site_name": site, "challan_number": f.get("challan_number","").strip(), "notes": f.get("notes","").strip()}
+                    "entry_date": date_, "purchaser": f.get("purchaser", "").strip(), "vendor": f.get("vendor", "").strip(),
+                    "invoice_no": f.get("invoice_no", "").strip(), "amount": amount, "payment_mode": f.get("payment_mode", "").strip(),
+                    "payment_detail": f.get("payment_detail", "").strip(), "payment_date": f.get("payment_date", "").strip(),
+                    "site_name": site, "challan_number": f.get("challan_number", "").strip(), "notes": f.get("notes", "").strip()
+                }
                 if real_files:
-                    f1, f2, uerr = process_file_uploads(real_files, "PUR", row_id)
+                    f1, f2, uerr = process_file_uploads_with_site(real_files, "PUR", str(row_id), record["site_name"])
                     if uerr:
                         msg, msg_type = f"Could not update files: {uerr}", "error"
                         return page(f"Edit Purchase Entry #{row_id}", "", msg, msg_type)
-                    if f1: record["file1_link"] = f1
-                    if f2: record["file2_link"] = f2
-                update_purchase(row_id, record)
+                    if f1:
+                        record["file1_link"] = f1
+                    if f2:
+                        record["file2_link"] = f2
+                update_purchase(row_id, record, files=files if real_files else None)
                 return redirect(url_for("purchase_page"))
         row = get_purchase_row(row_id)
 
-    sites_opts = "".join(f'<option value="{escape(s)}" {"selected" if s==row.get("site_name") else ""}>{escape(s)}</option>' for s in get_sites())
-    emp_opts = "".join(f'<option value="{escape(e)}" {"selected" if e==row.get("purchaser") else ""}>{escape(e)}</option>' for e in get_employees())
-    pm_opts = "".join(f'<option value="{p}" {"selected" if p==row.get("payment_mode") else ""}>{p}</option>' for p in PAYMENT_MODES)
+    sites_opts = "".join(f'<option value="{escape(s)}" {"selected" if s == row.get("site_name") else ""}>{escape(s)}</option>' for s in get_sites())
+    emp_opts = "".join(f'<option value="{escape(e)}" {"selected" if e == row.get("purchaser") else ""}>{escape(e)}</option>' for e in get_employees())
+    pm_opts = "".join(f'<option value="{p}" {"selected" if p == row.get("payment_mode") else ""}>{p}</option>' for p in PAYMENT_MODES)
+
     body = f"""<div class="card"><p><b>Originally entered by:</b> {escape(str(row.get('created_by') or 'unknown'))} |
     <b>Current files:</b> {file_links_html(row.get('file1_link'), row.get('file2_link'))}</p>
     <form method="post" enctype="multipart/form-data"><div class="grid">
@@ -1172,8 +1487,7 @@ def purchase_edit(row_id):
     <a href="/purchase"><button type="button" class="secondary">Cancel</button></a></form></div>"""
     return page(f"Edit Purchase Entry #{row_id}", body, msg, msg_type)
 
-
-# ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
 # Routes: Challans (with file upload + permission-gated editing)
 # ---------------------------------------------------------------------------
 @app.route("/challans", methods=["GET", "POST"])
@@ -1182,9 +1496,9 @@ def challans_page():
     msg, msg_type = None, "ok"
     if request.method == "POST":
         f = request.form
-        challan_no = f.get("challan_number","").strip()
-        challan_date = f.get("challan_date","").strip()
-        site = f.get("site_name","").strip()
+        challan_no = f.get("challan_number", "").strip()
+        challan_date = f.get("challan_date", "").strip()
+        site = f.get("site_name", "").strip()
         if not challan_no or not challan_date or not site:
             msg, msg_type = "Challan Number, Date, and Site are required.", "error"
         else:
@@ -1198,13 +1512,23 @@ def challans_page():
                 if not ok:
                     msg, msg_type = ferr, "error"
                 else:
-                    cid = get_or_create_challan(challan_no, challan_date, site, f.get("vehicle_number","").strip(),
-                                                 f.get("driver_name","").strip(), current_user())
+                    cid = get_or_create_challan(
+                        challan_no, challan_date, site,
+                        f.get("vehicle_number", "").strip(),
+                        f.get("driver_name", "").strip(),
+                        current_user()
+                    )
                     if real_files:
-                        f1, f2, uerr = process_file_uploads(real_files, "CH", challan_no)
-                        if not uerr:
-                            update_challan_header(cid, challan_date, site, f.get("vehicle_number","").strip(),
-                                                   f.get("driver_name","").strip(), f1, f2)
+                        f1, f2, uerr = process_file_uploads_with_site(real_files, "CH", challan_no, site)
+                        if uerr:
+                            msg, msg_type = uerr, "error"
+                        else:
+                            update_challan_header(
+                                cid, challan_date, site,
+                                f.get("vehicle_number", "").strip(),
+                                f.get("driver_name", "").strip(),
+                                f1, f2, files=real_files
+                            )
                     return redirect(url_for("challan_detail", challan_id=cid))
 
     sites_opts = "".join(f'<option value="{escape(s)}">{escape(s)}</option>' for s in get_sites())
@@ -1224,7 +1548,7 @@ def challans_page():
     rows = ""
     for c in get_all_challans():
         n_items = len(get_items_for_challan(c["id"]))
-        allowed, _ = can_modify_entry(c.get("created_by",""), c.get("created_at",""))
+        allowed, _ = can_modify_entry(c.get("created_by", ""), c.get("created_at", ""))
         edit_btn = f'<a href="/challans/{c["id"]}/edit"><button type="button" class="edit">Edit</button></a>' if allowed else '<button type="button" disabled>Locked</button>'
         del_btn = (f'<form class="inline" method="post" action="/challans/{c["id"]}/delete" onsubmit="return confirm(\'Delete this challan and items?\');">'
                    f'<button type="submit" class="danger">Delete</button></form>') if allowed else ""
@@ -1234,8 +1558,8 @@ def challans_page():
         <td><b>{escape(str(c.get('created_by') or ''))}</b></td>
         <td>{file_links_html(c.get('file1_link'), c.get('file2_link'))}</td>
         <td class="actions">{edit_btn} {del_btn}</td></tr>"""
-    table = f"""<table><tr><th>Challan No.</th><th>Date</th><th>Site</th><th>Vehicle</th><th>Driver</th>
-    <th>Items</th><th>Entered By</th><th>Files</th><th></th></tr>{rows}</table>"""
+    table = f"""<div class="scroll-table"><table><tr><th>Challan No.</th><th>Date</th><th>Site</th><th>Vehicle</th><th>Driver</th>
+    <th>Items</th><th>Entered By</th><th>Files</th><th></th></tr>{rows}</table></div>"""
     return page("Challans", form + table, msg, msg_type)
 
 
@@ -1244,7 +1568,7 @@ def challans_page():
 def challan_delete_route(challan_id):
     challan = get_challan(challan_id)
     if challan:
-        allowed, reason = can_modify_entry(challan.get("created_by",""), challan.get("created_at",""))
+        allowed, reason = can_modify_entry(challan.get("created_by", ""), challan.get("created_at", ""))
         if allowed:
             delete_challan(challan_id)
     return redirect(url_for("challans_page"))
@@ -1256,15 +1580,15 @@ def challan_edit(challan_id):
     challan = get_challan(challan_id)
     if not challan:
         return redirect(url_for("challans_page"))
-    allowed, reason = can_modify_entry(challan.get("created_by",""), challan.get("created_at",""))
+    allowed, reason = can_modify_entry(challan.get("created_by", ""), challan.get("created_at", ""))
     if not allowed:
         return page("Cannot Edit", f"<p>{escape(reason)}</p><p><a href='/challans'>Back</a></p>", reason, "error")
 
     msg, msg_type = None, "ok"
     if request.method == "POST":
         f = request.form
-        challan_date = f.get("challan_date","").strip()
-        site = f.get("site_name","").strip()
+        challan_date = f.get("challan_date", "").strip()
+        site = f.get("site_name", "").strip()
         mismatch = challan_date_mismatch(challan["challan_number"], challan_date, exclude_id=challan_id)
         if mismatch:
             msg, msg_type = f"Another challan with the same number already uses date {mismatch}.", "error"
@@ -1277,17 +1601,21 @@ def challan_edit(challan_id):
             else:
                 f1, f2 = None, None
                 if real_files:
-                    f1, f2, uerr = process_file_uploads(real_files, "CH", challan["challan_number"])
+                    f1, f2, uerr = process_file_uploads_with_site(real_files, "CH", challan["challan_number"], site)
                     if uerr:
                         msg, msg_type = uerr, "error"
                         challan = get_challan(challan_id)
                         return page(f"Edit Challan {challan['challan_number']}", "", msg, msg_type)
-                update_challan_header(challan_id, challan_date, site, f.get("vehicle_number","").strip(),
-                                       f.get("driver_name","").strip(), f1, f2)
+                update_challan_header(
+                    challan_id, challan_date, site,
+                    f.get("vehicle_number", "").strip(),
+                    f.get("driver_name", "").strip(),
+                    f1, f2, files=real_files
+                )
                 return redirect(url_for("challan_detail", challan_id=challan_id))
         challan = get_challan(challan_id)
 
-    sites_opts = "".join(f'<option value="{escape(s)}" {"selected" if s==challan["site_name"] else ""}>{escape(s)}</option>' for s in get_sites())
+    sites_opts = "".join(f'<option value="{escape(s)}" {"selected" if s == challan["site_name"] else ""}>{escape(s)}</option>' for s in get_sites())
     body = f"""<div class="card"><p><b>Challan Number:</b> {escape(str(challan['challan_number']))} (fixed) |
     <b>Originally entered by:</b> {escape(str(challan.get('created_by') or 'unknown'))} |
     <b>Current files:</b> {file_links_html(challan.get('file1_link'), challan.get('file2_link'))}</p>
@@ -1313,14 +1641,14 @@ def challan_detail(challan_id):
     challan = get_challan(challan_id)
     if not challan:
         return redirect(url_for("challans_page"))
-    challan_allowed, challan_reason = can_modify_entry(challan.get("created_by",""), challan.get("created_at",""))
+    challan_allowed, challan_reason = can_modify_entry(challan.get("created_by", ""), challan.get("created_at", ""))
     msg, msg_type = None, "ok"
     if request.method == "POST":
         action = request.form.get("action")
         if action == "delete_item":
             item_id = request.form.get("item_id")
             item = get_challan_item(item_id)
-            item_allowed, item_reason = can_modify_entry(item.get("created_by",""), challan.get("created_at","")) if item else (False, "Not found")
+            item_allowed, item_reason = can_modify_entry(item.get("created_by", ""), challan.get("created_at", "")) if item else (False, "Not found")
             if not item_allowed:
                 msg, msg_type = item_reason, "error"
             else:
@@ -1331,13 +1659,13 @@ def challan_detail(challan_id):
                 msg, msg_type = challan_reason, "error"
             else:
                 f = request.form
-                desc = f.get("description","").strip()
+                desc = f.get("description", "").strip()
                 try:
                     qty_nos = float(f.get("qty_nos") or 0)
                     qty_m = float(f.get("qty_meters") or 0)
                 except ValueError:
                     qty_nos, qty_m = 0.0, 0.0
-                billable = f.get("billable","").strip()
+                billable = f.get("billable", "").strip()
                 if not desc or billable not in BILLABLE_OPTIONS:
                     msg, msg_type = "Description and Billable are required.", "error"
                 elif item_duplicate_in_challan(challan_id, desc, qty_nos, qty_m):
@@ -1352,7 +1680,7 @@ def challan_detail(challan_id):
     items = get_items_for_challan(challan_id)
     rows = ""
     for it in items:
-        item_allowed, _ = can_modify_entry(it.get("created_by",""), challan.get("created_at",""))
+        item_allowed, _ = can_modify_entry(it.get("created_by", ""), challan.get("created_at", ""))
         edit_btn = f'<a href="/challans/{challan_id}/items/{it["id"]}/edit"><button type="button" class="edit">Edit</button></a>' if item_allowed else '<button type="button" disabled>Locked</button>'
         del_btn = (f'<form class="inline" method="post" onsubmit="return confirm(\'Delete this item?\');">'
                    f'<input type="hidden" name="action" value="delete_item"><input type="hidden" name="item_id" value="{it["id"]}">'
@@ -1377,7 +1705,7 @@ def challan_detail(challan_id):
     <b>Files:</b> {file_links_html(challan.get('file1_link'), challan.get('file2_link'))} &nbsp;
     {"<a href='/challans/"+str(challan_id)+"/edit'><button type='button' class='edit'>Edit Challan Header</button></a>" if challan_allowed else ""}</p></div>
     {add_item_form}
-    <table><tr><th>Sr No.</th><th>Description</th><th>Qty(Nos)</th><th>Qty(M)</th><th>Billable</th><th>Entered By</th><th></th></tr>{rows}</table>
+    <div class="scroll-table"><table><tr><th>Sr No.</th><th>Description</th><th>Qty(Nos)</th><th>Qty(M)</th><th>Billable</th><th>Entered By</th><th></th></tr>{rows}</table></div>
     <p><a href="/challans">&larr; Back to all challans</a></p>"""
     return page(f"Challan {challan['challan_number']}", body, msg, msg_type)
 
@@ -1389,20 +1717,20 @@ def challan_item_edit(challan_id, item_id):
     challan = get_challan(challan_id)
     if not item or not challan:
         return redirect(url_for("challan_detail", challan_id=challan_id))
-    allowed, reason = can_modify_entry(item.get("created_by",""), challan.get("created_at",""))
+    allowed, reason = can_modify_entry(item.get("created_by", ""), challan.get("created_at", ""))
     if not allowed:
         return page("Cannot Edit", f"<p>{escape(reason)}</p><p><a href='/challans/{challan_id}'>Back</a></p>", reason, "error")
 
     msg, msg_type = None, "ok"
     if request.method == "POST":
         f = request.form
-        desc = f.get("description","").strip()
+        desc = f.get("description", "").strip()
         try:
             qty_nos = float(f.get("qty_nos") or 0)
             qty_m = float(f.get("qty_meters") or 0)
         except ValueError:
             qty_nos, qty_m = 0.0, 0.0
-        billable = f.get("billable","").strip()
+        billable = f.get("billable", "").strip()
         if not desc or billable not in BILLABLE_OPTIONS:
             msg, msg_type = "Description and Billable are required.", "error"
         elif item_duplicate_in_challan(challan_id, desc, qty_nos, qty_m, exclude_item_id=item_id):
@@ -1412,7 +1740,7 @@ def challan_item_edit(challan_id, item_id):
             return redirect(url_for("challan_detail", challan_id=challan_id))
         item = get_challan_item(item_id)
 
-    bill_opts = "".join(f'<option value="{b}" {"selected" if b==item["billable"] else ""}>{b}</option>' for b in BILLABLE_OPTIONS)
+    bill_opts = "".join(f'<option value="{b}" {"selected" if b == item["billable"] else ""}>{b}</option>' for b in BILLABLE_OPTIONS)
     body = f"""<div class="card"><p><b>Sr No.:</b> {item['sr_no']} (fixed) |
     <b>Originally entered by:</b> {escape(str(item.get('created_by') or 'unknown'))}</p><form method="post"><div class="grid">
     <div>Description<br><input type="text" name="description" value="{escape(str(item['description']))}" required></div>
@@ -1431,35 +1759,43 @@ def challan_item_edit(challan_id, item_id):
 @login_required
 def site_view():
     site = request.args.get("site", "ALL SITES")
-    sites_opts = "".join(f'<option value="{escape(s)}" {"selected" if s==site else ""}>{escape(s)}</option>' for s in ["ALL SITES"] + get_sites())
+    sites_opts = "".join(f'<option value="{escape(s)}" {"selected" if s == site else ""}>{escape(s)}</option>' for s in ["ALL SITES"] + get_sites())
     pc_rows = "".join(
         f"<tr><td>{escape(str(r.get('entry_date') or ''))}</td><td>{escape(str(r.get('purchaser') or ''))}</td>"
         f"<td>{escape(str(r.get('vendor') or ''))}</td><td>{escape(str(r.get('invoice_no') or ''))}</td>"
         f"<td>{float(r.get('amount') or 0):,.2f}</td><td>{escape(str(r.get('site_name') or ''))}</td>"
         f"<td>{escape(str(r.get('challan_number') or ''))}</td><td>{escape(str(r.get('notes') or ''))}</td>"
         f"<td>{escape(str(r.get('created_by') or ''))}</td><td>{file_links_html(r.get('file1_link'), r.get('file2_link'))}</td></tr>"
-        for r in get_purchases(site))
+        for r in get_purchases(site)
+    )
     ci_rows = "".join(
         f"<tr><td>{escape(str(r.get('challan_number')))}</td><td>{escape(str(r.get('challan_date')))}</td>"
         f"<td>{r.get('sr_no')}</td><td>{escape(str(r.get('description')))}</td><td>{r.get('qty_nos')}</td>"
         f"<td>{r.get('qty_meters')}</td><td>{escape(str(r.get('billable')))}</td><td>{escape(str(r.get('site_name')))}</td>"
         f"<td>{escape(str(r.get('created_by') or ''))}</td></tr>"
-        for r in get_challan_items_for_site(site))
+        for r in get_challan_items_for_site(site)
+    )
     total = sum(float(r.get("amount") or 0) for r in get_purchases(site)) if site != "ALL SITES" else None
     total_html = f"<p><b>Total Expense for {escape(site)}: {total:,.2f}</b></p>" if total is not None else ""
-    export_btn = (f'<a href="/export/site/{escape(site)}"><button type="button">Download {escape(site)} Report (Excel)</button></a>'
-                  if site != "ALL SITES" else "")
+
+    # Export button only for Admin
+    export_btn = ""
+    if is_admin() and site != "ALL SITES":
+        export_btn = f'<a href="/export/site/{escape(site)}"><button type="button">Download {escape(site)} Report (Excel)</button></a>'
+
     body = f"""<form method="get"><label>Select Site: </label>
     <select name="site" onchange="this.form.submit()">{sites_opts}</select></form>{total_html}{export_btn}
-    <h3>Purchase Entries</h3><table><tr><th>Date</th><th>Purchaser</th><th>Vendor</th><th>Invoice</th>
-    <th>Amount</th><th>Site</th><th>Challan</th><th>Notes</th><th>Entered By</th><th>Files</th></tr>{pc_rows}</table>
-    <h3>Challan Items</h3><table><tr><th>Challan No.</th><th>Date</th><th>Sr No.</th><th>Description</th>
-    <th>Qty(Nos)</th><th>Qty(M)</th><th>Billable</th><th>Site</th><th>Entered By</th></tr>{ci_rows}</table>"""
+    <h3>Purchase Entries</h3>
+    <div class="scroll-table"><table><tr><th>Date</th><th>Purchaser</th><th>Vendor</th><th>Invoice</th>
+    <th>Amount</th><th>Site</th><th>Challan</th><th>Notes</th><th>Entered By</th><th>Files</th></tr>{pc_rows}</table></div>
+    <h3>Challan Items</h3>
+    <div class="scroll-table"><table><tr><th>Challan No.</th><th>Date</th><th>Sr No.</th><th>Description</th>
+    <th>Qty(Nos)</th><th>Qty(M)</th><th>Billable</th><th>Site</th><th>Entered By</th></tr>{ci_rows}</table></div>"""
     return page("Site-wise View", body)
 
 
 @app.route("/export")
-@login_required
+@admin_required
 def export_route():
     wb = build_full_export_workbook()
     tmp_path = "/tmp/Fire_Safety_Full_Export.xlsx"
@@ -1468,7 +1804,7 @@ def export_route():
 
 
 @app.route("/export/site/<site_name>")
-@login_required
+@admin_required
 def export_site_route(site_name):
     wb = build_site_export_workbook(site_name)
     safe_name = "".join(c for c in site_name if c.isalnum() or c in " -_")
@@ -1477,6 +1813,9 @@ def export_site_route(site_name):
     return send_file(tmp_path, as_attachment=True, download_name=f"{safe_name}_Report.xlsx")
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
