@@ -470,23 +470,104 @@ def delete_user(username):
 
 
 LOGIN_PAGE = """
-<!DOCTYPE html><html><head><title>Login - """ + APP_TITLE + """</title>
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Login - """ + APP_TITLE + """</title>
 <style>
-body{font-family:Segoe UI,Arial,sans-serif;background:#f7f7f7;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;}
-.box{background:#fff;padding:30px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.15);width:320px;}
-h2{color:#7A1F1F;text-align:center;}
-input{width:100%;padding:8px;margin:8px 0;border:1px solid #ccc;border-radius:4px;box-sizing:border-box;}
-button{width:100%;padding:10px;background:#7A1F1F;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:15px;}
-.error{color:#b00020;text-align:center;margin-bottom:10px;}
-</style></head><body>
-<div class="box"><h2>""" + APP_TITLE + """</h2>
+:root {
+  --bg: #f5f5f7;
+  --card-bg: #ffffff;
+  --primary: #7A1F1F;
+  --text: #111111;
+  --muted: #666666;
+}
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  padding: 1rem;
+}
+.box {
+  background: var(--card-bg);
+  padding: 1.25rem;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+  width: 100%;
+  max-width: 360px;
+}
+h2 {
+  color: var(--primary);
+  text-align: center;
+  margin: 0 0 0.75rem 0;
+  font-size: 1.35rem;
+}
+label {
+  display: block;
+  margin-top: 0.6rem;
+  margin-bottom: 0.25rem;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+input {
+  width: 100%;
+  padding: 0.65rem 0.7rem;
+  font-size: 1rem;
+  border-radius: 8px;
+  border: 1px solid #ccc;
+  background: #fff;
+}
+button {
+  width: 100%;
+  padding: 0.7rem 0.8rem;
+  font-size: 1.05rem;
+  font-weight: 700;
+  border-radius: 8px;
+  min-height: 48px;
+  margin-top: 0.75rem;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  cursor: pointer;
+}
+.error {
+  color: #b00020;
+  text-align: center;
+  margin-bottom: 0.6rem;
+  font-size: 0.9rem;
+}
+@media (max-width: 400px) {
+  .box {
+    padding: 1rem;
+  }
+  h2 {
+    font-size: 1.2rem;
+  }
+}
+</style>
+</head>
+<body>
+<div class="box">
+  <h2>""" + APP_TITLE + """</h2>
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
   <form method="post">
-    <input type="text" name="username" placeholder="Username" required autofocus>
-    <input type="password" name="password" placeholder="Password" required>
+    <label for="username">Username</label>
+    <input type="text" id="username" name="username" placeholder="Username" required autofocus>
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" placeholder="Password" required>
     <button type="submit">Login</button>
   </form>
-</div></body></html>
+</div>
+</body>
+</html>
 """
 
 
@@ -1669,8 +1750,13 @@ def purchase_page():
                 amount = 0.0
             vendor = f.get("vendor", "").strip()
             invoice_no = f.get("invoice_no", "").strip()
+            vendor = vendor.strip()
             if not date_ or not site:
                 msg, msg_type = "Date and Site are required.", "error"
+            elif not vendor:
+                msg, msg_type = "Vendor name is required.", "error"
+            elif amount <= 0:
+                msg, msg_type = "Amount must be greater than 0.", "error"
             else:
                 files = request.files.getlist("attachments")
                 ok, ferr = validate_uploaded_files([x for x in files if x and x.filename])
