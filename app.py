@@ -1769,11 +1769,18 @@ def purchase_edit(row_id):
 @login_required
 def challans_page():
     msg, msg_type = None, "ok"
+
+    # Define sites_opts here so it exists for both GET and POST
+    sites_opts = "".join(
+        f'<option value="{escape(s)}">{escape(s)}</option>' for s in get_sites()
+    )
+
     if request.method == "POST":
         f = request.form
         challan_no = f.get("challan_number", "").strip()
         challan_date = f.get("challan_date", "").strip()
         site = f.get("site_name", "").strip()
+        ...
         if not challan_no or not challan_date or not site:
             msg, msg_type = "Challan Number, Date, and Site are required.", "error"
         else:
