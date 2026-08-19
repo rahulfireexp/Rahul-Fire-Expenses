@@ -149,22 +149,69 @@ def get_drive_service():
 
 def get_drive_folder_id():
     global _drive_folder_id
+
     if _drive_folder_id:
         return _drive_folder_id
+
+    configured_folder_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "").strip()
+
+    if configured_folder_id:
+        service = get_drive_service()
+
+        try:
+            folder = service.files().get(
+                fileId=configured_folder_id,
+                fields="id,name,mimeType,trashed,parents",
+                supportsAllDrives=True
+            ).execute()
+        except Exception as exc:
+            raise RuntimeError(
+                f"GOOGLE_DRIVE_FOLDER_ID could not be accessed: {exc}"
+            ) from exc
+
+        if folder.get("mimeType") != "application/vnd.google-apps.folder":
+            raise RuntimeError(
+                "GOOGLE_DRIVE_FOLDER_ID does not refer to a folder."
+            )
+
+        if folder.get("trashed"):
+            raise RuntimeError(
+                "GOOGLE_DRIVE_FOLDER_ID refers to a folder in Trash."
+            )
+
+        _drive_folder_id = folder["id"]
+        return _drive_folder_id
+
     service = get_drive_service()
     folder_name = os.environ.get(
         "GOOGLE_DRIVE_FOLDER_NAME",
         "Rahul Fire Data Entry - Attachments"
+    ).strip()
+
+    query = (
+        f"name = '{folder_name.replace(chr(39), chr(92) + chr(39))}' "
+        "and mimeType = 'application/vnd.google-apps.folder' "
+        "and trashed = false"
     )
-    query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
-    results = service.files().list(q=query, fields="files(id, name)").execute()
+
+    results = service.files().list(
+        q=query,
+        spaces="drive",
+        fields="files(id,name,mimeType,parents)",
+        pageSize=100,
+        orderBy="createdTime"
+    ).execute()
+
     files = results.get("files", [])
-    if files:
-        _drive_folder_id = files[0]["id"]
-    else:
-        metadata = {"name": folder_name, "mimeType": "application/vnd.google-apps.folder"}
-        folder = service.files().create(body=metadata, fields="id").execute()
-        _drive_folder_id = folder["id"]
+
+    if not files:
+        raise RuntimeError(
+            f"Drive folder '{folder_name}' was not found. "
+            "Create it in the Gmail owner's My Drive, share it with the "
+            "service account, or set GOOGLE_DRIVE_FOLDER_ID."
+        )
+
+    _drive_folder_id = files[0]["id"]
     return _drive_folder_id
 
 
@@ -176,7 +223,12 @@ def get_site_folder_id(site_name):
     service = get_drive_service()
     folder_name = f"SITE_{site_name}"
     query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
-    results = service.files().list(q=query, fields="files(id, name)").execute()
+    results = service.files().list(
+    q=query,
+    spaces="drive",
+    fields="files(id,name,parents)",
+    pageSize=100
+).execute()
     files = results.get("files", [])
     if files:
         return files[0]["id"]
@@ -197,7 +249,12 @@ def get_or_create_subfolder(parent_id, name):
     """
     service = get_drive_service()
     query = f"name='{name}' and mimeType='application/vnd.google-apps.folder' and trashed=false and '{parent_id}' in parents"
-    results = service.files().list(q=query, fields="files(id)").execute()
+    results = service.files().list(
+    q=query,
+    spaces="drive",
+    fields="files(id,name,parents)",
+    pageSize=100
+).execute()
     files = results.get("files", [])
     if files:
         return files[0]["id"]
@@ -206,7 +263,11 @@ def get_or_create_subfolder(parent_id, name):
         "mimeType": "application/vnd.google-apps.folder",
         "parents": [parent_id]
     }
-    folder = service.files().create(body=metadata, fields="id").execute()
+    folder = service.files().create(
+    body=metadata,
+    fields="id",
+    supportsAllDrives=True
+).execute()
     return folder["id"]
 
 
@@ -238,36 +299,83 @@ def extract_drive_file_id(file_url):
 
 def upload_file_to_drive_with_site(file_obj, filename, mimetype, site_name, entry_type):
     """
-    Upload a file to Drive under:
-      SITE_{site_name}/Purchase  or  SITE_{site_name}/Challan
-    entry_type: "PUR" or "CH"
-    If a file with the same name exists in that folder, overwrite it.
-    Returns the public viewer URL.
+    Upload a file under:
+
+        Rahul Fire Data Entry - Attachments
+          └── SITE_<site_name>
+              ├── Purchase
+              └── Challan
+
+    If a file with the same name already exists in its destination
+    folder, overwrite that file and return its Drive viewer URL.
     """
+
     service = get_drive_service()
+
     site_folder_id = get_site_folder_id(site_name)
     subfolder_name = "Purchase" if entry_type == "PUR" else "Challan"
     subfolder_id = get_or_create_subfolder(site_folder_id, subfolder_name)
 
-    query = f"name='{filename}' and trashed=false and '{subfolder_id}' in parents"
-    results = service.files().list(q=query, fields="files(id)").execute()
+    escaped_filename = filename.replace("'", "\\'")
+    query = (
+        f"name = '{escaped_filename}' "
+        f"and '{subfolder_id}' in parents "
+        "and trashed = false"
+    )
+
+    results = service.files().list(
+        q=query,
+        spaces="drive",
+        fields="files(id,name,parents)",
+        pageSize=100,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True
+    ).execute()
+
     existing = results.get("files", [])
 
     file_bytes = file_obj.read()
+
     from googleapiclient.http import MediaIoBaseUpload
-    media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mimetype, resumable=False)
+
+    media = MediaIoBaseUpload(
+        io.BytesIO(file_bytes),
+        mimetype=mimetype,
+        resumable=False
+    )
 
     if existing:
         file_id = existing[0]["id"]
-        service.files().update(fileId=file_id, media_body=media).execute()
-    else:
-        metadata = {"name": filename, "parents": [subfolder_id]}
-        created = service.files().create(body=metadata, media_body=media, fields="id").execute()
-        file_id = created["id"]
-        service.permissions().create(
+
+        service.files().update(
             fileId=file_id,
-            body={"type": "anyone", "role": "reader"}
+            media_body=media,
+            supportsAllDrives=True
         ).execute()
+
+    else:
+        metadata = {
+            "name": filename,
+            "parents": [subfolder_id]
+        }
+
+        created = service.files().create(
+            body=metadata,
+            media_body=media,
+            fields="id",
+            supportsAllDrives=True
+        ).execute()
+
+        file_id = created["id"]
+
+    service.permissions().create(
+        fileId=file_id,
+        body={
+            "type": "anyone",
+            "role": "reader"
+        },
+        supportsAllDrives=True
+    ).execute()
 
     return f"https://drive.google.com/file/d/{file_id}/view"
 
