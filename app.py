@@ -1178,10 +1178,10 @@ p {
 /* Cards */
 .card {
   background: var(--card-bg);
-  border-radius: 8px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-  padding: 0.75rem;
-  margin-bottom: 0.75rem;
+  border-radius: 10px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+  padding: 0.85rem;
+  margin-bottom: 0.85rem;
 }
 
 /* Tables */
@@ -1190,7 +1190,7 @@ table {
   width: 100%;
   background: var(--card-bg);
   margin-top: 0.5rem;
-  font-size: 0.85rem;
+  font-size: 0.82rem;
 }
 th, td {
   border: 1px solid var(--border);
@@ -1212,19 +1212,58 @@ tr:nth-child(even) {
   -webkit-overflow-scrolling: touch;
 }
 
-/* Forms */
-input, select, textarea {
-  width: 100%;
-  padding: 0.55rem 0.6rem;
-  margin: 0.25rem 0 0.55rem;
-  border-radius: 6px;
-  border: 1px solid #ccc;
-  font-family: inherit;
+/* Forms: smartphone-friendly vertical layout */
+.card h3 {
+  margin: 0 0 0.5rem 0;
+  font-size: 1.15rem;
+}
+
+.card label {
+  display: block;
+  margin-top: 0.7rem;
+  margin-bottom: 0.25rem;
+  font-weight: 600;
   font-size: 0.95rem;
+  color: #333;
+}
+
+.card input[type="text"],
+.card input[type="number"],
+.card input[type="date"],
+.card select,
+.card textarea {
+  width: 100%;
+  padding: 0.65rem 0.7rem;
+  font-size: 1rem; /* prevents zoom on iOS */
+  border-radius: 8px;
+  border: 1px solid #ccc;
   background: #fff;
 }
 
-/* Buttons */
+.card textarea {
+  resize: vertical;
+  min-height: 80px;
+}
+
+.card input[type="file"] {
+  margin-top: 0.25rem;
+  margin-bottom: 0.35rem;
+  font-size: 0.9rem;
+}
+
+/* Big, touch-friendly buttons in forms */
+.card button[type="submit"],
+.card .btn-submit {
+  width: 100%;
+  padding: 0.7rem 0.8rem;
+  font-size: 1.05rem;
+  font-weight: 700;
+  border-radius: 8px;
+  min-height: 48px; /* good touch target */
+  margin-top: 0.6rem;
+}
+
+/* General buttons */
 button, .btn {
   display: inline-block;
   background: var(--primary);
@@ -1266,7 +1305,7 @@ button:disabled, .btn.disabled {
   border-color: #e08a8a;
 }
 
-/* Grid for forms */
+/* Grid (used in some admin forms) */
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
@@ -1295,6 +1334,9 @@ nav {
   gap: 0.5rem;
   align-items: center;
   font-size: 0.95rem;
+  position: sticky;
+  top: 0;
+  z-index: 10;
 }
 nav a {
   color: #fff;
@@ -1318,7 +1360,7 @@ nav a:hover {
     font-size: 1rem;
   }
   table {
-    font-size: 0.78rem;
+    font-size: 0.75rem;
   }
   th, td {
     padding: 0.35rem 0.25rem;
@@ -1332,20 +1374,43 @@ nav a:hover {
     padding: 0.6rem 0.9rem;
     min-height: 44px; /* better touch target */
   }
-  .grid {
-    grid-template-columns: 1fr;
+
+  .card {
+    padding: 0.7rem;
+  }
+  .card label {
+    font-size: 0.95rem;
+  }
+  .card input[type="text"],
+  .card input[type="number"],
+  .card input[type="date"],
+  .card select,
+  .card textarea {
+    padding: 0.7rem 0.75rem;
+    font-size: 1.05rem;
+  }
+  .card button[type="submit"],
+  .card .btn-submit {
+    padding: 0.75rem 0.9rem;
+    font-size: 1.1rem;
+    min-height: 52px;
+  }
+
+  /* Make table actions stack a bit better */
+  .actions form,
+  .actions a {
+    display: inline-block;
+    margin-right: 0.25rem;
   }
 }
 </style>
 """
 
 
-
 def page(title, body, msg=None, msg_type="ok"):
     msg_html = f'<div class="msg {"error" if msg_type=="error" else ""}">{escape(msg)}</div>' if msg else ""
     return f"""<!DOCTYPE html><html><head><title>{escape(title)} - {escape(APP_TITLE)}</title>{STYLE}</head>
     <body>{NAV()}<div class="container"><h2>{escape(title)}</h2>{msg_html}{body}</div></body></html>"""
-
 
 def file_links_html(file1, file2):
     parts = []
