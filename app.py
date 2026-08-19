@@ -1510,24 +1510,52 @@ def render_purchase_form_and_table():
     pm_opts = "".join(f'<option value="{p}">{p}</option>' for p in PAYMENT_MODES)
     today = datetime.today().strftime("%Y-%m-%d")
 
+    # Smartphone-friendly vertical form
     form = f"""<div class="card"><h3>New Entry</h3>
     <form method="post" enctype="multipart/form-data">
-    <input type="hidden" name="action" value="add"><div class="grid">
-    <div>Date<br><input type="date" name="entry_date" value="{today}" required></div>
-    <div>Purchaser<br><select name="purchaser">{emp_opts}</select></div>
-    <div>Vendor/Details<br><input type="text" name="vendor"></div>
-    <div>Invoice No.<br><input type="text" name="invoice_no"></div>
-    <div>Amount (with GST)<br><input type="number" step="0.01" name="amount"></div>
-    <div>Payment Mode<br><select name="payment_mode">{pm_opts}</select></div>
-    <div>Payment Detail<br><input type="text" name="payment_detail"></div>
-    <div>Payment Date<br><input type="date" name="payment_date" value="{today}"></div>
-    <div>Site Name<br><select name="site_name">{sites_opts}</select></div>
-    <div>Challan Number<br><input type="text" name="challan_number"></div>
-    <div style="grid-column: span 2;">Notes / Remarks<br><textarea name="notes" rows="2" style="width:100%;"></textarea></div>
-    <div style="grid-column: span 2;">Attach up to 2 files (JPG/JPEG/PDF)<br>
+    <input type="hidden" name="action" value="add">
+
+    <label>Date</label>
+    <input type="date" name="entry_date" value="{today}" required>
+
+    <label>Purchaser</label>
+    <select name="purchaser">{emp_opts}</select>
+
+    <label>Vendor/Details</label>
+    <input type="text" name="vendor" placeholder="Vendor name / details">
+
+    <label>Invoice No.</label>
+    <input type="text" name="invoice_no" placeholder="Invoice number">
+
+    <label>Amount (with GST)</label>
+    <input type="number" step="0.01" name="amount" placeholder="0.00">
+
+    <label>Payment Mode</label>
+    <select name="payment_mode">{pm_opts}</select>
+
+    <label>Payment Detail</label>
+    <input type="text" name="payment_detail" placeholder="e.g. UTX ID, Cheque No.">
+
+    <label>Payment Date</label>
+    <input type="date" name="payment_date" value="{today}">
+
+    <label>Site Name</label>
+    <select name="site_name">{sites_opts}</select>
+
+    <label>Challan Number</label>
+    <input type="text" name="challan_number" placeholder="Challan number">
+
+    <label>Notes / Remarks</label>
+    <textarea name="notes" rows="3" placeholder="Any additional notes"></textarea>
+
+    <label>Attach up to 2 files (JPG/JPEG/PDF)</label>
     <input type="file" name="attachments" accept=".jpg,.jpeg,.pdf">
-    <input type="file" name="attachments" accept=".jpg,.jpeg,.pdf"></div>
-    </div><br><button type="submit">Add Entry</button></form></div>"""
+    <input type="file" name="attachments" accept=".jpg,.jpeg,.pdf">
+
+    <div style="margin-top:0.6rem;">
+      <button type="submit" style="width:100%;font-size:1.05rem;">Add Entry</button>
+    </div>
+    </form></div>"""
 
     rows = ""
     for r in get_purchases():
@@ -1713,19 +1741,35 @@ def challans_page():
                             )
                     return redirect(url_for("challan_detail", challan_id=cid))
 
-    sites_opts = "".join(f'<option value="{escape(s)}">{escape(s)}</option>' for s in get_sites())
+        sites_opts = "".join(f'<option value="{escape(s)}">{escape(s)}</option>' for s in get_sites())
     today = datetime.today().strftime("%Y-%m-%d")
+
     form = f"""<div class="card"><h3>Start / Load a Challan</h3>
-    <form method="post" enctype="multipart/form-data"><div class="grid">
-    <div>Challan Number<br><input type="text" name="challan_number" required></div>
-    <div>Date<br><input type="date" name="challan_date" value="{today}" required></div>
-    <div>Site<br><select name="site_name">{sites_opts}</select></div>
-    <div>Vehicle Number<br><input type="text" name="vehicle_number"></div>
-    <div>Driver Name<br><input type="text" name="driver_name"></div>
-    <div style="grid-column: span 2;">Attach up to 2 files (JPG/JPEG/PDF)<br>
+    <form method="post" enctype="multipart/form-data">
+
+    <label>Challan Number</label>
+    <input type="text" name="challan_number" placeholder="Challan number" required>
+
+    <label>Date</label>
+    <input type="date" name="challan_date" value="{today}" required>
+
+    <label>Site</label>
+    <select name="site_name">{sites_opts}</select>
+
+    <label>Vehicle Number</label>
+    <input type="text" name="vehicle_number" placeholder="Vehicle number">
+
+    <label>Driver Name</label>
+    <input type="text" name="driver_name" placeholder="Driver name">
+
+    <label>Attach up to 2 files (JPG/JPEG/PDF)</label>
     <input type="file" name="attachments" accept=".jpg,.jpeg,.pdf">
-    <input type="file" name="attachments" accept=".jpg,.jpeg,.pdf"></div></div>
-    <br><button type="submit">Start / Load Challan</button></form></div>"""
+    <input type="file" name="attachments" accept=".jpg,.jpeg,.pdf">
+
+    <div style="margin-top:0.6rem;">
+      <button type="submit" style="width:100%;font-size:1.05rem;">Start / Load Challan</button>
+    </div>
+    </form></div>"""
 
     rows = ""
     for c in get_all_challans():
@@ -1798,19 +1842,37 @@ def challan_edit(challan_id):
         challan = get_challan(challan_id)
 
     sites_opts = "".join(f'<option value="{escape(s)}" {"selected" if s == challan["site_name"] else ""}>{escape(s)}</option>' for s in get_sites())
-    body = f"""<div class="card"><p><b>Challan Number:</b> {escape(str(challan['challan_number']))} (fixed) |
+
+    body = f"""<div class="card">
+    <p><b>Challan Number:</b> {escape(str(challan['challan_number']))} (fixed) |
     <b>Originally entered by:</b> {escape(str(challan.get('created_by') or 'unknown'))} |
     <b>Current files:</b> {file_links_html(challan.get('file1_link'), challan.get('file2_link'))}</p>
-    <form method="post" enctype="multipart/form-data"><div class="grid">
-    <div>Date<br><input type="date" name="challan_date" value="{escape(str(challan['challan_date']))}" required></div>
-    <div>Site<br><select name="site_name">{sites_opts}</select></div>
-    <div>Vehicle Number<br><input type="text" name="vehicle_number" value="{escape(str(challan.get('vehicle_number') or ''))}"></div>
-    <div>Driver Name<br><input type="text" name="driver_name" value="{escape(str(challan.get('driver_name') or ''))}"></div>
-    <div style="grid-column: span 2;">Replace files (optional, leave blank to keep existing)<br>
+
+    <form method="post" enctype="multipart/form-data">
+
+    <label>Date</label>
+    <input type="date" name="challan_date" value="{escape(str(challan['challan_date']))}" required>
+
+    <label>Site</label>
+    <select name="site_name">{sites_opts}</select>
+
+    <label>Vehicle Number</label>
+    <input type="text" name="vehicle_number" value="{escape(str(challan.get('vehicle_number') or ''))}">
+
+    <label>Driver Name</label>
+    <input type="text" name="driver_name" value="{escape(str(challan.get('driver_name') or ''))}">
+
+    <label>Replace files (optional, leave blank to keep existing)</label>
     <input type="file" name="attachments" accept=".jpg,.jpeg,.pdf">
-    <input type="file" name="attachments" accept=".jpg,.jpeg,.pdf"></div>
-    </div><br><button type="submit">Save Changes</button>
-    <a href="/challans/{challan_id}"><button type="button" class="secondary">Cancel</button></a></form></div>"""
+    <input type="file" name="attachments" accept=".jpg,.jpeg,.pdf">
+
+    <div style="margin-top:0.6rem; display:flex; gap:0.5rem;">
+      <button type="submit" style="flex:1;font-size:1.05rem;">Save Changes</button>
+      <a href="/challans/{challan_id}" style="flex:1;text-decoration:none;">
+        <button type="button" class="secondary" style="width:100%;font-size:1.05rem;">Cancel</button>
+      </a>
+    </div>
+    </form></div>"""
     return page(f"Edit Challan {challan['challan_number']}", body, msg, msg_type)
 
 
