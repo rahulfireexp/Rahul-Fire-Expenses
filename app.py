@@ -2025,7 +2025,7 @@ def purchase_edit(row_id):
     emp_opts = "".join(f'<option value="{escape(e)}" {"selected" if e == row.get("purchaser") else ""}>{escape(e)}</option>' for e in get_employees())
     pm_opts = "".join(f'<option value="{p}" {"selected" if p == row.get("payment_mode") else ""}>{p}</option>' for p in PAYMENT_MODES)
 
-       body = f"""<div class="card">
+    body = f"""<div class="card">
     <p><b>Originally entered by:</b> {escape(str(row.get('created_by') or 'unknown'))} |
     <b>Current files:</b> {file_links_html(row.get('file1_link'), row.get('file2_link'))}</p>
 
