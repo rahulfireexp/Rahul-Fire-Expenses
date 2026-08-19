@@ -1492,9 +1492,10 @@ def page(title, body, msg=None, msg_type="ok"):
     msg_html = f'<div class="msg {"error" if msg_type=="error" else ""}">{escape(msg)}</div>' if msg else ""
     return f"""<!DOCTYPE html><html><head><title>{escape(title)} - {escape(APP_TITLE)}</title>{STYLE}
     <!-- AI Document Scanner -->
-    <link rel="stylesheet" href="https://unpkg.com/cropperjs@1.6.2/dist/cropper.min.css">
-    <script src="https://unpkg.com/cropperjs@1.6.2/dist/cropper.min.js"></script>
-    <script src="https://unpkg.com/pdf-lib@1.23.1/dist/pdf-lib.min.js"></script>
+    <link rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
     <style>
       .scanner-modal {{
         display: none;
@@ -1608,45 +1609,102 @@ def page(title, body, msg=None, msg_type="ok"):
         }};
       }}
 
-      async function cropAndCreatePdf(targetInputId) {{
-        if (!cropper) return;
-        const modal = document.getElementById('ai-scanner-modal');
-        const statusEl = document.getElementById('ai-scanner-status');
-        statusEl.textContent = 'Cropping and generating PDF...';
+      async function cropAndCreatePdf(targetInputId) {
+    const modal = document.getElementById("ai-scanner-modal");
+    const statusEl = document.getElementById("ai-scanner-status");
+    const cropButton = modal.querySelector(".btn-crop");
 
-        const canvas = cropper.getCroppedCanvas({{ maxWidth: 2000, maxHeight: 3000 }});
-        const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.92));
-        const arrayBuffer = await blob.arrayBuffer();
+    try {
+        if (!cropper) {
+            statusEl.textContent = "Please capture an image first.";
+            return;
+        }
 
-        const {{ PDFDocument }} = PDFLib;
-        const pdfDoc = await PDFDocument.create();
+        if (!window.PDFLib || !window.PDFLib.PDFDocument) {
+            throw new Error("PDF library did not load. Please refresh the page and try again.");
+        }
+
+        cropButton.disabled = true;
+        statusEl.textContent = "Cropping and generating PDF...";
+
+        const canvas = cropper.getCroppedCanvas({
+            maxWidth: 2000,
+            maxHeight: 3000,
+            imageSmoothingEnabled: true,
+            imageSmoothingQuality: "high"
+        });
+
+        if (!canvas || canvas.width === 0 || canvas.height === 0) {
+            throw new Error("The cropped image is empty.");
+        }
+
+        const blob = await new Promise((resolve, reject) => {
+            canvas.toBlob(
+                result => {
+                    if (result) {
+                        resolve(result);
+                    } else {
+                        reject(new Error("The browser could not create the image."));
+                    }
+                },
+                "image/jpeg",
+                0.92
+            );
+        });
+
+        const imageBytes = new Uint8Array(await blob.arrayBuffer());
+        const pdfDoc = await PDFLib.PDFDocument.create();
+
         const page = pdfDoc.addPage([canvas.width, canvas.height]);
-        const image = await pdfDoc.embedJpg(new Uint8Array(arrayBuffer));
-        page.drawImage(image, {{ x: 0, y: 0, width: canvas.width, height: canvas.height }});
+        const image = await pdfDoc.embedJpg(imageBytes);
+
+        page.drawImage(image, {
+            x: 0,
+            y: 0,
+            width: canvas.width,
+            height: canvas.height
+        });
+
         const pdfBytes = await pdfDoc.save();
-        const pdfBlob = new Blob([pdfBytes], {{ type: 'application/pdf' }});
-        const pdfFile = new File([pdfBlob], 'scanned.pdf', {{ type: 'application/pdf' }});
+        const pdfBlob = new Blob([pdfBytes], {
+            type: "application/pdf"
+        });
+
+        const pdfFile = new File(
+            [pdfBlob],
+            "scanned-document.pdf",
+            { type: "application/pdf" }
+        );
 
         const inputEl = document.getElementById(targetInputId);
-        const dt = new DataTransfer();
-        dt.items.add(pdfFile);
-        inputEl.files = dt.files;
 
-        modal.style.display = 'none';
-        if (cropper) {{
-          cropper.destroy();
-          cropper = null;
-        }}
-      }}
+        if (!inputEl) {
+            throw new Error("The target upload field was not found.");
+        }
 
-      function closeScanner() {{
-        const modal = document.getElementById('ai-scanner-modal');
-        modal.style.display = 'none';
-        if (cropper) {{
-          cropper.destroy();
-          cropper = null;
-        }}
-      }}
+        const dataTransfer = new DataTransfer();
+        dataTransfer.items.add(pdfFile);
+        inputEl.files = dataTransfer.files;
+
+        statusEl.textContent = "PDF ready. Submit the form to save it.";
+
+        if (cropper) {
+            cropper.destroy();
+            cropper = null;
+        }
+
+        setTimeout(() => {
+            modal.style.display = "none";
+        }, 700);
+
+    } catch (error) {
+        console.error("Scanner PDF error:", error);
+        statusEl.textContent =
+            "Could not create PDF: " + (error.message || "Unknown error");
+    } finally {
+        cropButton.disabled = false;
+    }
+}
     </script>
     </head>
     <body>{NAV()}<div class="container"><h2>{escape(title)}</h2>{msg_html}{body}
