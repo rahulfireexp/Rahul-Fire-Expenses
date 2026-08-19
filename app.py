@@ -1841,7 +1841,7 @@ def render_purchase_form_and_table():
     today = datetime.today().strftime("%Y-%m-%d")
 
     # Smartphone-friendly vertical form
-        form = f"""<div class="card"><h3>New Entry</h3>
+    form = f"""<div class="card"><h3>New Entry</h3>
     <form method="post" enctype="multipart/form-data">
     <input type="hidden" name="action" value="add">
 
