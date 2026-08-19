@@ -1490,8 +1490,192 @@ nav a:hover {
 
 def page(title, body, msg=None, msg_type="ok"):
     msg_html = f'<div class="msg {"error" if msg_type=="error" else ""}">{escape(msg)}</div>' if msg else ""
-    return f"""<!DOCTYPE html><html><head><title>{escape(title)} - {escape(APP_TITLE)}</title>{STYLE}</head>
-    <body>{NAV()}<div class="container"><h2>{escape(title)}</h2>{msg_html}{body}</div></body></html>"""
+    return f"""<!DOCTYPE html><html><head><title>{escape(title)} - {escape(APP_TITLE)}</title>{STYLE}
+    <!-- AI Document Scanner -->
+    <link rel="stylesheet" href="https://unpkg.com/cropperjs@1.6.2/dist/cropper.min.css">
+    <script src="https://unpkg.com/cropperjs@1.6.2/dist/cropper.min.js"></script>
+    <script src="https://unpkg.com/pdf-lib@1.23.1/dist/pdf-lib.min.js"></script>
+    <style>
+      .scanner-modal {{
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.85);
+        z-index: 9999;
+        align-items: center;
+        justify-content: center;
+      }}
+      .scanner-box {{
+        background: #fff;
+        width: 92%;
+        max-width: 500px;
+        max-height: 85vh;
+        border-radius: 12px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }}
+      .scanner-header {{
+        background: #111;
+        color: #fff;
+        padding: 0.6rem 0.75rem;
+        font-weight: 700;
+        font-size: 0.95rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }}
+      .scanner-body {{
+        padding: 0.6rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+      }}
+      .scanner-img-wrap {{
+        position: relative;
+        width: 100%;
+        height: 0;
+        padding-bottom: 130%;
+        background: #000;
+      }}
+      .scanner-img-wrap img {{
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+      }}
+      .scanner-actions {{
+        display: flex;
+        gap: 0.5rem;
+      }}
+      .scanner-actions button {{
+        flex: 1;
+        padding: 0.6rem 0.7rem;
+        border-radius: 8px;
+        border: none;
+        font-weight: 700;
+        font-size: 0.95rem;
+        cursor: pointer;
+      }}
+      .btn-scan {{
+        background: #7A1F1F;
+        color: #fff;
+      }}
+      .btn-cancel {{
+        background: #888;
+        color: #fff;
+      }}
+      .btn-crop {{
+        background: #1F6F4A;
+        color: #fff;
+      }}
+    </style>
+    <script>
+      let cropper = null;
+      async function openScanner(targetInputId) {{
+        const modal = document.getElementById('ai-scanner-modal');
+        const imgEl = document.getElementById('ai-scanner-img');
+        const statusEl = document.getElementById('ai-scanner-status');
+        modal.style.display = 'flex';
+        statusEl.textContent = 'Tap “Use camera” to capture a document.';
+
+        const file = await new Promise((resolve) => {{
+          const inner = document.createElement('input');
+          inner.type = 'file';
+          inner.accept = 'image/*';
+          inner.capture = 'environment';
+          inner.onchange = () => resolve(inner.files[0] || null);
+          inner.click();
+        }});
+
+        if (!file) {{
+          modal.style.display = 'none';
+          return;
+        }}
+
+        const url = URL.createObjectURL(file);
+        imgEl.src = url;
+        imgEl.onload = () => {{
+          if (cropper) cropper.destroy();
+          cropper = new Cropper(imgEl, {{
+            viewMode: 1,
+            dragMode: 'move',
+            autoCropArea: 0.9,
+            responsive: true,
+          }});
+          statusEl.textContent = 'Adjust the crop box to match the document edges, then tap “Crop & Create PDF”.';
+        }};
+      }}
+
+      async function cropAndCreatePdf(targetInputId) {{
+        if (!cropper) return;
+        const modal = document.getElementById('ai-scanner-modal');
+        const statusEl = document.getElementById('ai-scanner-status');
+        statusEl.textContent = 'Cropping and generating PDF...';
+
+        const canvas = cropper.getCroppedCanvas({{ maxWidth: 2000, maxHeight: 3000 }});
+        const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.92));
+        const arrayBuffer = await blob.arrayBuffer();
+
+        const {{ PDFDocument }} = PDFLib;
+        const pdfDoc = await PDFDocument.create();
+        const page = pdfDoc.addPage([canvas.width, canvas.height]);
+        const image = await pdfDoc.embedJpg(new Uint8Array(arrayBuffer));
+        page.drawImage(image, {{ x: 0, y: 0, width: canvas.width, height: canvas.height }});
+        const pdfBytes = await pdfDoc.save();
+        const pdfBlob = new Blob([pdfBytes], {{ type: 'application/pdf' }});
+        const pdfFile = new File([pdfBlob], 'scanned.pdf', {{ type: 'application/pdf' }});
+
+        const inputEl = document.getElementById(targetInputId);
+        const dt = new DataTransfer();
+        dt.items.add(pdfFile);
+        inputEl.files = dt.files;
+
+        modal.style.display = 'none';
+        if (cropper) {{
+          cropper.destroy();
+          cropper = null;
+        }}
+      }}
+
+      function closeScanner() {{
+        const modal = document.getElementById('ai-scanner-modal');
+        modal.style.display = 'none';
+        if (cropper) {{
+          cropper.destroy();
+          cropper = null;
+        }}
+      }}
+    </script>
+    </head>
+    <body>{NAV()}<div class="container"><h2>{escape(title)}</h2>{msg_html}{body}
+
+    <!-- AI Scanner Modal -->
+    <div id="ai-scanner-modal" class="scanner-modal">
+      <div class="scanner-box">
+        <div class="scanner-header">
+          <span>AI Document Scanner</span>
+          <button type="button" class="btn-cancel" onclick="closeScanner()" style="background:transparent;border:none;color:#fff;font-weight:700;">✕</button>
+        </div>
+        <div class="scanner-body">
+          <div class="scanner-img-wrap">
+            <img id="ai-scanner-img" alt="Document to scan">
+          </div>
+          <div id="ai-scanner-status" style="font-size:0.9rem;color:#444;"></div>
+          <div class="scanner-actions">
+            <button type="button" class="btn-scan" onclick="openScanner(currentScannerTarget)">Use camera</button>
+            <button type="button" class="btn-crop" onclick="cropAndCreatePdf(currentScannerTarget)">Crop & Create PDF</button>
+            <button type="button" class="btn-cancel" onclick="closeScanner()">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    </body></html>"""
+
+# Global used by the in-page scanner JS
+current_scanner_target = None
 
 def file_links_html(file1, file2):
     parts = []
@@ -1657,7 +1841,7 @@ def render_purchase_form_and_table():
     today = datetime.today().strftime("%Y-%m-%d")
 
     # Smartphone-friendly vertical form
-    form = f"""<div class="card"><h3>New Entry</h3>
+        form = f"""<div class="card"><h3>New Entry</h3>
     <form method="post" enctype="multipart/form-data">
     <input type="hidden" name="action" value="add">
 
@@ -1694,15 +1878,29 @@ def render_purchase_form_and_table():
     <label>Notes / Remarks</label>
     <textarea name="notes" rows="3" placeholder="Any additional notes"></textarea>
 
-    <label>Attach up to 2 files (JPG/JPEG/PDF)</label>
-    <input type="file" name="attachments" accept=".jpg,.jpeg,.pdf">
-    <input type="file" name="attachments" accept=".jpg,.jpeg,.pdf">
+    <label>Attach file 1 (JPG/JPEG/PDF)</label>
+    <input type="file" id="purchase_file1" name="attachments" accept=".jpg,.jpeg,.pdf">
+    <button type="button"
+            onclick="currentScannerTarget='purchase_file1'; openScanner('purchase_file1');"
+            class="btn"
+            style="width:100%;margin-top:0.35rem;">
+      Scan document with AI
+    </button>
+
+    <label>Attach file 2 (JPG/JPEG/PDF)</label>
+    <input type="file" id="purchase_file2" name="attachments" accept=".jpg,.jpeg,.pdf">
+    <button type="button"
+            onclick="currentScannerTarget='purchase_file2'; openScanner('purchase_file2');"
+            class="btn"
+            style="width:100%;margin-top:0.35rem;">
+      Scan document with AI
+    </button>
 
     <div style="margin-top:0.6rem;">
       <button type="submit" style="width:100%;font-size:1.05rem;">Add Entry</button>
     </div>
     </form></div>"""
-
+    
     rows = ""
     for r in get_purchases():
         allowed, _ = can_modify_entry(r.get("created_by", ""), r.get("created_at", ""))
@@ -1827,26 +2025,70 @@ def purchase_edit(row_id):
     emp_opts = "".join(f'<option value="{escape(e)}" {"selected" if e == row.get("purchaser") else ""}>{escape(e)}</option>' for e in get_employees())
     pm_opts = "".join(f'<option value="{p}" {"selected" if p == row.get("payment_mode") else ""}>{p}</option>' for p in PAYMENT_MODES)
 
-    body = f"""<div class="card"><p><b>Originally entered by:</b> {escape(str(row.get('created_by') or 'unknown'))} |
+       body = f"""<div class="card">
+    <p><b>Originally entered by:</b> {escape(str(row.get('created_by') or 'unknown'))} |
     <b>Current files:</b> {file_links_html(row.get('file1_link'), row.get('file2_link'))}</p>
-    <form method="post" enctype="multipart/form-data"><div class="grid">
-    <div>Date<br><input type="date" name="entry_date" value="{escape(str(row.get('entry_date') or ''))}" required></div>
-    <div>Purchaser<br><select name="purchaser">{emp_opts}</select></div>
-    <div>Vendor/Details<br><input type="text" name="vendor" value="{escape(str(row.get('vendor') or ''))}"></div>
-    <div>Invoice No.<br><input type="text" name="invoice_no" value="{escape(str(row.get('invoice_no') or ''))}"></div>
-    <div>Amount (with GST)<br><input type="number" step="0.01" name="amount" value="{row.get('amount')}"></div>
-    <div>Payment Mode<br><select name="payment_mode">{pm_opts}</select></div>
-    <div>Payment Detail<br><input type="text" name="payment_detail" value="{escape(str(row.get('payment_detail') or ''))}"></div>
-    <div>Payment Date<br><input type="date" name="payment_date" value="{escape(str(row.get('payment_date') or ''))}"></div>
-    <div>Site Name<br><select name="site_name">{sites_opts}</select></div>
-    <div>Challan Number<br><input type="text" name="challan_number" value="{escape(str(row.get('challan_number') or ''))}"></div>
-    <div style="grid-column: span 2;">Notes / Remarks<br><textarea name="notes" rows="2" style="width:100%;">{escape(str(row.get('notes') or ''))}</textarea></div>
-    <div style="grid-column: span 2;">Replace files (optional, leave blank to keep existing)<br>
-    <input type="file" name="attachments" accept=".jpg,.jpeg,.pdf">
-    <input type="file" name="attachments" accept=".jpg,.jpeg,.pdf"></div>
-    </div><br><button type="submit">Save Changes</button>
-    <a href="/purchase"><button type="button" class="secondary">Cancel</button></a></form></div>"""
-    return page(f"Edit Purchase Entry #{row_id}", body, msg, msg_type)
+
+    <form method="post" enctype="multipart/form-data">
+
+    <label>Date</label>
+    <input type="date" name="entry_date" value="{escape(str(row.get('entry_date') or ''))}" required>
+
+    <label>Purchaser</label>
+    <select name="purchaser">{emp_opts}</select>
+
+    <label>Vendor/Details</label>
+    <input type="text" name="vendor" value="{escape(str(row.get('vendor') or ''))}">
+
+    <label>Invoice No.</label>
+    <input type="text" name="invoice_no" value="{escape(str(row.get('invoice_no') or ''))}">
+
+    <label>Amount (with GST)</label>
+    <input type="number" step="0.01" name="amount" value="{row.get('amount')}">
+
+    <label>Payment Mode</label>
+    <select name="payment_mode">{pm_opts}</select>
+
+    <label>Payment Detail</label>
+    <input type="text" name="payment_detail" value="{escape(str(row.get('payment_detail') or ''))}">
+
+    <label>Payment Date</label>
+    <input type="date" name="payment_date" value="{escape(str(row.get('payment_date') or ''))}">
+
+    <label>Site Name</label>
+    <select name="site_name">{sites_opts}</select>
+
+    <label>Challan Number</label>
+    <input type="text" name="challan_number" value="{escape(str(row.get('challan_number') or ''))}">
+
+    <label>Notes / Remarks</label>
+    <textarea name="notes" rows="3">{escape(str(row.get('notes') or ''))}</textarea>
+
+    <label>Replace file 1 (JPG/JPEG/PDF)</label>
+    <input type="file" id="purchase_edit_file1" name="attachments" accept=".jpg,.jpeg,.pdf">
+    <button type="button"
+            onclick="currentScannerTarget='purchase_edit_file1'; openScanner('purchase_edit_file1');"
+            class="btn"
+            style="width:100%;margin-top:0.35rem;">
+      Scan document with AI
+    </button>
+
+    <label>Replace file 2 (JPG/JPEG/PDF)</label>
+    <input type="file" id="purchase_edit_file2" name="attachments" accept=".jpg,.jpeg,.pdf">
+    <button type="button"
+            onclick="currentScannerTarget='purchase_edit_file2'; openScanner('purchase_edit_file2');"
+            class="btn"
+            style="width:100%;margin-top:0.35rem;">
+      Scan document with AI
+    </button>
+
+    <div style="margin-top:0.6rem; display:flex; gap:0.5rem;">
+      <button type="submit" style="flex:1;font-size:1.05rem;">Save Changes</button>
+      <a href="/purchase" style="flex:1;text-decoration:none;">
+        <button type="button" class="secondary" style="width:100%;font-size:1.05rem;">Cancel</button>
+      </a>
+    </div>
+    </form></div>"""
 
   # ---------------------------------------------------------------------------
 # Routes: Challans (with file upload + permission-gated editing)
@@ -1902,7 +2144,7 @@ def challans_page():
         sites_opts = "".join(f'<option value="{escape(s)}">{escape(s)}</option>' for s in get_sites())
     today = datetime.today().strftime("%Y-%m-%d")
 
-    form = f"""<div class="card"><h3>Start / Load a Challan</h3>
+    f    form = f"""<div class="card"><h3>Start / Load a Challan</h3>
     <form method="post" enctype="multipart/form-data">
 
     <label>Challan Number</label>
@@ -1920,9 +2162,23 @@ def challans_page():
     <label>Driver Name</label>
     <input type="text" name="driver_name" placeholder="Driver name">
 
-    <label>Attach up to 2 files (JPG/JPEG/PDF)</label>
-    <input type="file" name="attachments" accept=".jpg,.jpeg,.pdf">
-    <input type="file" name="attachments" accept=".jpg,.jpeg,.pdf">
+    <label>Attach file 1 (JPG/JPEG/PDF)</label>
+    <input type="file" id="challan_file1" name="attachments" accept=".jpg,.jpeg,.pdf">
+    <button type="button"
+            onclick="currentScannerTarget='challan_file1'; openScanner('challan_file1');"
+            class="btn"
+            style="width:100%;margin-top:0.35rem;">
+      Scan document with AI
+    </button>
+
+    <label>Attach file 2 (JPG/JPEG/PDF)</label>
+    <input type="file" id="challan_file2" name="attachments" accept=".jpg,.jpeg,.pdf">
+    <button type="button"
+            onclick="currentScannerTarget='challan_file2'; openScanner('challan_file2');"
+            class="btn"
+            style="width:100%;margin-top:0.35rem;">
+      Scan document with AI
+    </button>
 
     <div style="margin-top:0.6rem;">
       <button type="submit" style="width:100%;font-size:1.05rem;">Start / Load Challan</button>
@@ -2001,7 +2257,7 @@ def challan_edit(challan_id):
 
     sites_opts = "".join(f'<option value="{escape(s)}" {"selected" if s == challan["site_name"] else ""}>{escape(s)}</option>' for s in get_sites())
 
-    body = f"""<div class="card">
+        body = f"""<div class="card">
     <p><b>Challan Number:</b> {escape(str(challan['challan_number']))} (fixed) |
     <b>Originally entered by:</b> {escape(str(challan.get('created_by') or 'unknown'))} |
     <b>Current files:</b> {file_links_html(challan.get('file1_link'), challan.get('file2_link'))}</p>
@@ -2020,9 +2276,23 @@ def challan_edit(challan_id):
     <label>Driver Name</label>
     <input type="text" name="driver_name" value="{escape(str(challan.get('driver_name') or ''))}">
 
-    <label>Replace files (optional, leave blank to keep existing)</label>
-    <input type="file" name="attachments" accept=".jpg,.jpeg,.pdf">
-    <input type="file" name="attachments" accept=".jpg,.jpeg,.pdf">
+    <label>Replace file 1 (JPG/JPEG/PDF)</label>
+    <input type="file" id="challan_edit_file1" name="attachments" accept=".jpg,.jpeg,.pdf">
+    <button type="button"
+            onclick="currentScannerTarget='challan_edit_file1'; openScanner('challan_edit_file1');"
+            class="btn"
+            style="width:100%;margin-top:0.35rem;">
+      Scan document with AI
+    </button>
+
+    <label>Replace file 2 (JPG/JPEG/PDF)</label>
+    <input type="file" id="challan_edit_file2" name="attachments" accept=".jpg,.jpeg,.pdf">
+    <button type="button"
+            onclick="currentScannerTarget='challan_edit_file2'; openScanner('challan_edit_file2');"
+            class="btn"
+            style="width:100%;margin-top:0.35rem;">
+      Scan document with AI
+    </button>
 
     <div style="margin-top:0.6rem; display:flex; gap:0.5rem;">
       <button type="submit" style="flex:1;font-size:1.05rem;">Save Changes</button>
