@@ -1484,9 +1484,99 @@ nav a:hover {
     margin-right: 0.25rem;
   }
 }
+
+/* ---------- AI Scanner Modal (fixed for desktop) ---------- */
+.scanner-modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.85);
+  z-index: 9999;
+  align-items: center;
+  justify-content: center;
+}
+
+.scanner-box {
+  background: #fff;
+  width: 92%;
+  max-width: 500px;
+  max-height: 85vh;
+  border-radius: 12px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.scanner-header {
+  background: #111;
+  color: #fff;
+  padding: 0.6rem 0.75rem;
+  font-weight: 700;
+  font-size: 0.95rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.scanner-body {
+  padding: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.scanner-img-wrap {
+  position: relative;
+  width: 100%;
+  min-height: 180px;
+  max-height: 50vh;
+  background: #000;
+}
+
+.scanner-img-wrap img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.scanner-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.scanner-actions button {
+  flex: 1;
+  padding: 0.6rem 0.7rem;
+  border-radius: 8px;
+  border: none;
+  font-weight: 700;
+  font-size: 0.95rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn-scan {
+  background: #7A1F1F;
+  color: #fff;
+}
+
+.btn-cancel {
+  background: #888;
+  color: #fff;
+}
+
+.btn-crop {
+  background: #1F6F4A;
+  color: #fff;
+}
 </style>
 """
-
 def page(title, body, msg=None, msg_type="ok"):
     msg_html = f'<div class="msg {"error" if msg_type=="error" else ""}">{escape(msg)}</div>' if msg else ""
     return f"""<!DOCTYPE html><html><head><title>{escape(title)} - {escape(APP_TITLE)}</title>{STYLE}
