@@ -2144,7 +2144,7 @@ def challans_page():
         sites_opts = "".join(f'<option value="{escape(s)}">{escape(s)}</option>' for s in get_sites())
     today = datetime.today().strftime("%Y-%m-%d")
 
-       form = f"""<div class="card"><h3>Start / Load a Challan</h3>
+        form = f"""<div class="card"><h3>Start / Load a Challan</h3>
     <form method="post" enctype="multipart/form-data">
 
     <label>Challan Number</label>
