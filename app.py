@@ -2141,10 +2141,10 @@ def challans_page():
                             )
                     return redirect(url_for("challan_detail", challan_id=cid))
 
-        sites_opts = "".join(f'<option value="{escape(s)}">{escape(s)}</option>' for s in get_sites())
+    sites_opts = "".join(f'<option value="{escape(s)}">{escape(s)}</option>' for s in get_sites())
     today = datetime.today().strftime("%Y-%m-%d")
 
-      form = f"""<div class="card"><h3>Start / Load a Challan</h3>
+    form = f"""<div class="card"><h3>Start / Load a Challan</h3>
     <form method="post" enctype="multipart/form-data">
 
     <label>Challan Number</label>
