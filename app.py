@@ -1487,7 +1487,6 @@ nav a:hover {
 </style>
 """
 
-
 def page(title, body, msg=None, msg_type="ok"):
     msg_html = f'<div class="msg {"error" if msg_type=="error" else ""}">{escape(msg)}</div>' if msg else ""
     return f"""<!DOCTYPE html><html><head><title>{escape(title)} - {escape(APP_TITLE)}</title>{STYLE}
@@ -1495,7 +1494,7 @@ def page(title, body, msg=None, msg_type="ok"):
     <link rel="stylesheet"
       href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
     <style>
       .scanner-modal {{
         display: none;
@@ -1609,112 +1608,128 @@ def page(title, body, msg=None, msg_type="ok"):
         }};
       }}
 
-      async function cropAndCreatePdf(targetInputId) {
-    const modal = document.getElementById("ai-scanner-modal");
-    const statusEl = document.getElementById("ai-scanner-status");
-    const cropButton = modal.querySelector(".btn-crop");
+      async function cropAndCreatePdf(targetInputId) {{
+        const modal = document.getElementById("ai-scanner-modal");
+        const statusEl = document.getElementById("ai-scanner-status");
+        const cropButton = modal.querySelector(".btn-crop");
 
-    try {
-        if (!cropper) {
+        try {{
+          if (!cropper) {{
             statusEl.textContent = "Please capture an image first.";
             return;
-        }
+          }}
 
-        if (!window.PDFLib || !window.PDFLib.PDFDocument) {
+          if (!window.PDFLib || !window.PDFLib.PDFDocument) {{
             throw new Error("PDF library did not load. Please refresh the page and try again.");
-        }
+          }}
 
-        cropButton.disabled = true;
-        statusEl.textContent = "Cropping and generating PDF...";
+          cropButton.disabled = true;
+          statusEl.textContent = "Cropping and generating PDF...";
 
-        const canvas = cropper.getCroppedCanvas({
+          const canvas = cropper.getCroppedCanvas({{
             maxWidth: 2000,
             maxHeight: 3000,
             imageSmoothingEnabled: true,
             imageSmoothingQuality: "high"
-        });
+          }});
 
-        if (!canvas || canvas.width === 0 || canvas.height === 0) {
+          if (!canvas || canvas.width === 0 || canvas.height === 0) {{
             throw new Error("The cropped image is empty.");
-        }
+          }}
 
-        const blob = await new Promise((resolve, reject) => {
+          const blob = await new Promise((resolve, reject) => {{
             canvas.toBlob(
-                result => {
-                    if (result) {
-                        resolve(result);
-                    } else {
-                        reject(new Error("The browser could not create the image."));
-                    }
-                },
-                "image/jpeg",
-                0.92
+              result => {{
+                if (result) {{
+                  resolve(result);
+                }} else {{
+                  reject(new Error("The browser could not create the image."));
+                }}
+              }},
+              "image/jpeg",
+              0.92
             );
-        });
+          }});
 
-        const imageBytes = new Uint8Array(await blob.arrayBuffer());
-        const pdfDoc = await PDFLib.PDFDocument.create();
+          const imageBytes = new Uint8Array(await blob.arrayBuffer());
+          const pdfDoc = await PDFLib.PDFDocument.create();
 
-        const page = pdfDoc.addPage([canvas.width, canvas.height]);
-        const image = await pdfDoc.embedJpg(imageBytes);
+          const page = pdfDoc.addPage([canvas.width, canvas.height]);
+          const image = await pdfDoc.embedJpg(imageBytes);
 
-        page.drawImage(image, {
+          page.drawImage(image, {{
             x: 0,
             y: 0,
             width: canvas.width,
             height: canvas.height
-        });
+          }});
 
-        const pdfBytes = await pdfDoc.save();
-        const pdfBlob = new Blob([pdfBytes], {
+          const pdfBytes = await pdfDoc.save();
+          const pdfBlob = new Blob([pdfBytes], {{
             type: "application/pdf"
-        });
+          }});
 
-        const pdfFile = new File(
+          const pdfFile = new File(
             [pdfBlob],
             "scanned-document.pdf",
-            { type: "application/pdf" }
-        );
+            {{ type: "application/pdf" }}
+          );
 
-        const inputEl = document.getElementById(targetInputId);
+          const inputEl = document.getElementById(targetInputId);
 
-        if (!inputEl) {
+          if (!inputEl) {{
             throw new Error("The target upload field was not found.");
-        }
+          }}
 
-        const dataTransfer = new DataTransfer();
-        dataTransfer.items.add(pdfFile);
-        inputEl.files = dataTransfer.files;
+          const dataTransfer = new DataTransfer();
+          dataTransfer.items.add(pdfFile);
+          inputEl.files = dataTransfer.files;
 
-        statusEl.textContent = "PDF ready. Submit the form to save it.";
+          statusEl.textContent = "PDF ready. Submit the form to save it.";
 
-        if (cropper) {
+          if (cropper) {{
             cropper.destroy();
             cropper = null;
-        }
+          }}
 
-        setTimeout(() => {
+          setTimeout(() => {{
             modal.style.display = "none";
-        }, 700);
+          }}, 700);
 
-    } catch (error) {
-        console.error("Scanner PDF error:", error);
-        statusEl.textContent =
+        }} catch (error) {{
+          console.error("Scanner PDF error:", error);
+          statusEl.textContent =
             "Could not create PDF: " + (error.message || "Unknown error");
-    } finally {
-        cropButton.disabled = false;
-    }
-}
+        }} finally {{
+          cropButton.disabled = false;
+        }}
+      }}
+
+      function closeScanner() {{
+        const modal = document.getElementById('ai-scanner-modal');
+        modal.style.display = 'none';
+        if (cropper) {{
+          cropper.destroy();
+          cropper = null;
+        }}
+      }}
     </script>
     </head>
-    <body>{NAV()}<div class="container"><h2>{escape(title)}</h2>{msg_html}{body}
+    <body>
+    {NAV()}
+    <div class="container">
+      <h2>{escape(title)}</h2>
+      {msg_html}
+      {body}
+    </div>
 
     <!-- AI Scanner Modal -->
     <div id="ai-scanner-modal" class="scanner-modal">
       <div class="scanner-box">
         <div class="scanner-header">
           <span>AI Document Scanner</span>
-          <button type="button" class="btn-cancel" onclick="closeScanner()" style="background:transparent;border:none;color:#fff;font-weight:700;">✕</button>
+          <button type="button" class="btn-cancel" onclick="closeScanner()"
+            style="background:transparent;border:none;color:#fff;font-weight:700;">✕</button>
         </div>
         <div class="scanner-body">
           <div class="scanner-img-wrap">
@@ -1730,6 +1745,9 @@ def page(title, body, msg=None, msg_type="ok"):
       </div>
     </div>
 
+    <script>
+      let currentScannerTarget = null;
+    </script>
     </body></html>"""
 
 # Global used by the in-page scanner JS
