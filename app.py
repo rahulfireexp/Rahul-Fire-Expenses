@@ -2257,7 +2257,7 @@ def challan_edit(challan_id):
 
     sites_opts = "".join(f'<option value="{escape(s)}" {"selected" if s == challan["site_name"] else ""}>{escape(s)}</option>' for s in get_sites())
 
-        body = f"""<div class="card">
+    body = f"""<div class="card">
     <p><b>Challan Number:</b> {escape(str(challan['challan_number']))} (fixed) |
     <b>Originally entered by:</b> {escape(str(challan.get('created_by') or 'unknown'))} |
     <b>Current files:</b> {file_links_html(challan.get('file1_link'), challan.get('file2_link'))}</p>
