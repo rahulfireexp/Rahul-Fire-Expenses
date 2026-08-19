@@ -1129,40 +1129,222 @@ def NAV():
       {nav_links}
     </nav>
     """
-
-
 STYLE = """
 <style>
-body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#f5f5f5;color:#222;}
-.container{padding:0.75rem;max-width:1100px;margin:auto;}
-h2{color:#7A1F1F;margin:0.5rem 0;}
-table{border-collapse:collapse;width:100%;background:#fff;margin-top:0.5rem;font-size:0.85rem;}
-th,td{border:1px solid #ddd;padding:0.4rem;text-align:left;}
-th{background:#7A1F1F;color:#fff;}
-tr:nth-child(even){background:#fafafa;}
-form.inline{display:inline;}
-.card{background:#fff;border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,0.08);padding:0.75rem;margin-bottom:0.75rem;}
-input,select,textarea{width:100%;padding:0.4rem;margin:0.2rem 0 0.5rem;border-radius:4px;border:1px solid #ccc;font-family:inherit;font-size:0.9rem;}
-button{background:#7A1F1F;color:#fff;border:none;padding:0.4rem 0.8rem;border-radius:4px;cursor:pointer;font-size:0.9rem;}
-button.secondary{background:#888;}
-button.danger{background:#b00020;}
-button.edit{background:#1F6F4A;}
-button:disabled{background:#ccc;cursor:not-allowed;}
-.msg{padding:0.5rem;background:#e9fdf0;border:1px solid #7ac98e;border-radius:4px;margin-bottom:0.5rem;font-size:0.9rem;}
-.msg.error{background:#fde9e9;border-color:#e08a8a;}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:0.5rem;}
-.actions{white-space:nowrap;}
-.filelink{color:#1F6F4A;text-decoration:underline;}
-.btn{display:inline-block;background:#1a7f37;color:#fff;padding:0.4rem 0.8rem;border-radius:4px;text-decoration:none;font-size:0.9rem;}
-.scroll-table{overflow-x:auto;}
+:root {
+  --bg: #f5f5f7;
+  --card-bg: #ffffff;
+  --text: #111111;
+  --muted: #666666;
+  --primary: #7A1F1F;
+  --primary-contrast: #ffffff;
+  --accent: #1F6F4A;
+  --danger: #b00020;
+  --border: #dddddd;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.4;
+  -webkit-text-size-adjust: 100%;
+}
+
+.container {
+  padding: 0.75rem;
+  max-width: 1100px;
+  margin: auto;
+}
+
+/* Typography */
+h2 {
+  color: var(--primary);
+  margin: 0.6rem 0 0.4rem 0;
+  font-size: 1.35rem;
+}
+h3 {
+  margin: 0.6rem 0 0.3rem 0;
+  font-size: 1.1rem;
+}
+p {
+  margin: 0.35rem 0;
+  font-size: 0.95rem;
+}
+
+/* Cards */
+.card {
+  background: var(--card-bg);
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  padding: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+/* Tables */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  background: var(--card-bg);
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+}
+th, td {
+  border: 1px solid var(--border);
+  padding: 0.45rem 0.35rem;
+  text-align: left;
+}
+th {
+  background: var(--primary);
+  color: var(--primary-contrast);
+  font-weight: 600;
+}
+tr:nth-child(even) {
+  background: #fafafa;
+}
+
+/* Responsive tables */
+.scroll-table {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Forms */
+input, select, textarea {
+  width: 100%;
+  padding: 0.55rem 0.6rem;
+  margin: 0.25rem 0 0.55rem;
+  border-radius: 6px;
+  border: 1px solid #ccc;
+  font-family: inherit;
+  font-size: 0.95rem;
+  background: #fff;
+}
+
+/* Buttons */
+button, .btn {
+  display: inline-block;
+  background: var(--primary);
+  color: var(--primary-contrast);
+  border: none;
+  padding: 0.55rem 0.9rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  font-weight: 600;
+  text-decoration: none;
+  text-align: center;
+}
+button.secondary, .btn.secondary {
+  background: #888;
+}
+button.danger, .btn.danger {
+  background: var(--danger);
+}
+button.edit, .btn.edit {
+  background: var(--accent);
+}
+button:disabled, .btn.disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+/* Messages */
+.msg {
+  padding: 0.55rem 0.65rem;
+  background: #e9fdf0;
+  border: 1px solid #7ac98e;
+  border-radius: 6px;
+  margin-bottom: 0.55rem;
+  font-size: 0.9rem;
+}
+.msg.error {
+  background: #fde9e9;
+  border-color: #e08a8a;
+}
+
+/* Grid for forms */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.5rem;
+}
+
+/* Actions */
+.actions {
+  white-space: nowrap;
+}
+
+/* File links */
+.filelink {
+  color: var(--accent);
+  text-decoration: underline;
+  font-weight: 600;
+}
+
+/* Navigation bar */
+nav {
+  background: #1a1a1a;
+  color: #fff;
+  padding: 0.6rem 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  font-size: 0.95rem;
+}
+nav a {
+  color: #fff;
+  text-decoration: none;
+  padding: 0.25rem 0.35rem;
+  border-radius: 4px;
+}
+nav a:hover {
+  background: rgba(255,255,255,0.08);
+}
+
+/* Mobile tweaks */
+@media (max-width: 600px) {
+  .container {
+    padding: 0.5rem;
+  }
+  h2 {
+    font-size: 1.2rem;
+  }
+  h3 {
+    font-size: 1rem;
+  }
+  table {
+    font-size: 0.78rem;
+  }
+  th, td {
+    padding: 0.35rem 0.25rem;
+  }
+  input, select, textarea {
+    font-size: 1rem; /* prevents zoom on iOS */
+    padding: 0.6rem 0.65rem;
+  }
+  button, .btn {
+    font-size: 1rem;
+    padding: 0.6rem 0.9rem;
+    min-height: 44px; /* better touch target */
+  }
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
 </style>
 """
 
 
+
 def page(title, body, msg=None, msg_type="ok"):
     msg_html = f'<div class="msg {"error" if msg_type=="error" else ""}">{escape(msg)}</div>' if msg else ""
-    return f"""<!DOCTYPE html><html><head><title>{title} - {APP_TITLE}</title>{STYLE}</head>
-    <body>{NAV()}<div class="container"><h2>{title}</h2>{msg_html}{body}</div></body></html>"""
+    return f"""<!DOCTYPE html><html><head><title>{escape(title)} - {escape(APP_TITLE)}</title>{STYLE}</head>
+    <body>{NAV()}<div class="container"><h2>{escape(title)}</h2>{msg_html}{body}</div></body></html>"""
 
 
 def file_links_html(file1, file2):
