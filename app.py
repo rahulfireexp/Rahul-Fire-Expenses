@@ -2445,7 +2445,6 @@ def render_purchase_form_and_table():
 
     return form + table
 
-
 @app.route("/purchase", methods=["GET", "POST"])
 @login_required
 def purchase_page():
@@ -2454,7 +2453,7 @@ def purchase_page():
     if request.method == "POST":
         action = request.form.get("action")
 
-                if action == "delete":
+        if action == "delete":
             row_id = request.form.get("id")
             row = get_purchase_row(row_id)
 
@@ -2564,8 +2563,6 @@ def purchase_page():
         msg,
         msg_type
     )
-
-
 @app.route("/purchase/<row_id>/edit", methods=["GET", "POST"])
 @login_required
 def purchase_edit(row_id):
