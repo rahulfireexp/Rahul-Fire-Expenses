@@ -110,7 +110,8 @@ _gs_client = None
 _sheet = None
 _drive_service = None
 _drive_folder_id = None
-
+_site_folder_cache = {}
+_subfolder_cache = {}
 
 def get_sheet():
     global _gs_client, _sheet
@@ -244,59 +245,103 @@ def get_drive_folder_id():
 
 
 def get_site_folder_id(site_name):
-    """
-    Get or create a Drive folder named 'SITE_{site_name}'.
-    Returns the folder ID.
-    """
+    """Return the Drive folder ID for SITE_<site_name>, using memory cache."""
+
+    cache_key = str(site_name).strip()
+
+    if cache_key in _site_folder_cache:
+        return _site_folder_cache[cache_key]
+
     service = get_drive_service()
-    folder_name = f"SITE_{site_name}"
-    query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
-    results = service.files().list(
-    q=query,
-    spaces="drive",
-    fields="files(id,name,parents)",
-    pageSize=100
-).execute()
-    files = results.get("files", [])
-    if files:
-        return files[0]["id"]
     parent_id = get_drive_folder_id()
-    metadata = {
-        "name": folder_name,
-        "mimeType": "application/vnd.google-apps.folder",
-        "parents": [parent_id]
-    }
-    folder = service.files().create(body=metadata, fields="id").execute()
-    return folder["id"]
+    folder_name = f"SITE_{cache_key}"
+    escaped_name = folder_name.replace("'", "\\'")
+
+    query = (
+        f"name = '{escaped_name}' "
+        "and mimeType = 'application/vnd.google-apps.folder' "
+        f"and '{parent_id}' in parents "
+        "and trashed = false"
+    )
+
+    results = service.files().list(
+        q=query,
+        spaces="drive",
+        fields="files(id,name)",
+        pageSize=10,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True
+    ).execute()
+
+    files = results.get("files", [])
+
+    if files:
+        folder_id = files[0]["id"]
+    else:
+        metadata = {
+            "name": folder_name,
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents": [parent_id]
+        }
+
+        folder = service.files().create(
+            body=metadata,
+            fields="id",
+            supportsAllDrives=True
+        ).execute()
+
+        folder_id = folder["id"]
+
+    _site_folder_cache[cache_key] = folder_id
+    return folder_id
 
 
 def get_or_create_subfolder(parent_id, name):
-    """
-    Get or create a subfolder with given name under parent_id.
-    Returns the subfolder ID.
-    """
+    """Return a child folder ID, using memory cache."""
+
+    cache_key = (parent_id, name)
+
+    if cache_key in _subfolder_cache:
+        return _subfolder_cache[cache_key]
+
     service = get_drive_service()
-    query = f"name='{name}' and mimeType='application/vnd.google-apps.folder' and trashed=false and '{parent_id}' in parents"
+    escaped_name = name.replace("'", "\\'")
+
+    query = (
+        f"name = '{escaped_name}' "
+        "and mimeType = 'application/vnd.google-apps.folder' "
+        f"and '{parent_id}' in parents "
+        "and trashed = false"
+    )
+
     results = service.files().list(
-    q=query,
-    spaces="drive",
-    fields="files(id,name,parents)",
-    pageSize=100
-).execute()
+        q=query,
+        spaces="drive",
+        fields="files(id,name)",
+        pageSize=10,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True
+    ).execute()
+
     files = results.get("files", [])
+
     if files:
-        return files[0]["id"]
-    metadata = {
-        "name": name,
-        "mimeType": "application/vnd.google-apps.folder",
-        "parents": [parent_id]
-    }
-    folder = service.files().create(
-    body=metadata,
-    fields="id",
-    supportsAllDrives=True
-).execute()
-    return folder["id"]
+        folder_id = files[0]["id"]
+    else:
+        folder = service.files().create(
+            body={
+                "name": name,
+                "mimeType": "application/vnd.google-apps.folder",
+                "parents": [parent_id]
+            },
+            fields="id",
+            supportsAllDrives=True
+        ).execute()
+
+        folder_id = folder["id"]
+
+    _subfolder_cache[cache_key] = folder_id
+    return folder_id
 
 
 def rename_drive_file(file_id, new_name):
@@ -327,15 +372,10 @@ def extract_drive_file_id(file_url):
 
 def upload_file_to_drive_with_site(file_obj, filename, mimetype, site_name, entry_type):
     """
-    Upload a file under:
+    Upload one attachment directly to its final site/type folder.
 
-        Rahul Fire Data Entry - Attachments
-          └── SITE_<site_name>
-              ├── Purchase
-              └── Challan
-
-    If a file with the same name already exists in its destination
-    folder, overwrite that file and return its Drive viewer URL.
+    Filenames are entry-specific, so the function creates a new Drive file
+    without an additional filename lookup.
     """
 
     service = get_drive_service()
@@ -344,69 +384,27 @@ def upload_file_to_drive_with_site(file_obj, filename, mimetype, site_name, entr
     subfolder_name = "Purchase" if entry_type == "PUR" else "Challan"
     subfolder_id = get_or_create_subfolder(site_folder_id, subfolder_name)
 
-    escaped_filename = filename.replace("'", "\\'")
-    query = (
-        f"name = '{escaped_filename}' "
-        f"and '{subfolder_id}' in parents "
-        "and trashed = false"
-    )
-
-    results = service.files().list(
-        q=query,
-        spaces="drive",
-        fields="files(id,name,parents)",
-        pageSize=100,
-        supportsAllDrives=True,
-        includeItemsFromAllDrives=True
-    ).execute()
-
-    existing = results.get("files", [])
-
-    file_bytes = file_obj.read()
-
     from googleapiclient.http import MediaIoBaseUpload
 
     media = MediaIoBaseUpload(
-        io.BytesIO(file_bytes),
+        io.BytesIO(file_obj.read()),
         mimetype=mimetype,
         resumable=False
     )
 
-    if existing:
-        file_id = existing[0]["id"]
-
-        service.files().update(
-            fileId=file_id,
-            media_body=media,
-            supportsAllDrives=True
-        ).execute()
-
-    else:
-        metadata = {
+    created = service.files().create(
+        body={
             "name": filename,
             "parents": [subfolder_id]
-        }
-
-        created = service.files().create(
-            body=metadata,
-            media_body=media,
-            fields="id",
-            supportsAllDrives=True
-        ).execute()
-
-        file_id = created["id"]
-
-    service.permissions().create(
-        fileId=file_id,
-        body={
-            "type": "anyone",
-            "role": "reader"
         },
+        media_body=media,
+        fields="id",
         supportsAllDrives=True
     ).execute()
 
-    return f"https://drive.google.com/file/d/{file_id}/view"
+    file_id = created["id"]
 
+    return f"https://drive.google.com/file/d/{file_id}/view"
 
 def validate_uploaded_files(file_list):
     real_files = [f for f in file_list if f and f.filename]
@@ -1799,6 +1797,102 @@ def page(title, body, msg=None, msg_type="ok"):
     </style>
     <script>
       let cropper = null;
+            async function compressImageFile(file) {{
+        if (!file || !file.type.startsWith("image/")) {{
+          return file;
+        }}
+
+        if (file.size <= 1200 * 1024) {{
+          return file;
+        }}
+
+        const imageUrl = URL.createObjectURL(file);
+
+        try {{
+          const image = await new Promise((resolve, reject) => {{
+            const img = new Image();
+            img.onload = () => resolve(img);
+            img.onerror = reject;
+            img.src = imageUrl;
+          }});
+
+          const maxDimension = 1600;
+          const scale = Math.min(
+            1,
+            maxDimension / Math.max(image.width, image.height)
+          );
+
+          const width = Math.max(1, Math.round(image.width * scale));
+          const height = Math.max(1, Math.round(image.height * scale));
+
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+
+          const context = canvas.getContext("2d");
+          context.drawImage(image, 0, 0, width, height);
+
+          const blob = await new Promise((resolve) => {{
+            canvas.toBlob(resolve, "image/jpeg", 0.82);
+          }});
+
+          if (!blob) {{
+            return file;
+          }}
+
+          return new File(
+            [blob],
+            file.name.replace(/\.[^.]+$/, "") + ".jpg",
+            {{ type: "image/jpeg" }}
+          );
+        }} finally {{
+          URL.revokeObjectURL(imageUrl);
+        }}
+      }}
+
+      async function compressSelectedAttachments(form) {{
+        const submitButton = form.querySelector(
+          'button[type="submit"]'
+        );
+
+        if (submitButton) {{
+          submitButton.disabled = true;
+          submitButton.textContent = "Preparing files...";
+        }}
+
+        try {{
+          const inputs = form.querySelectorAll(
+            'input[type="file"][name="attachments"]'
+          );
+
+          for (const input of inputs) {{
+            if (!input.files || input.files.length === 0) {{
+              continue;
+            }}
+
+            const originalFile = input.files[0];
+            const compressedFile = await compressImageFile(originalFile);
+
+            if (compressedFile !== originalFile) {{
+              const transfer = new DataTransfer();
+              transfer.items.add(compressedFile);
+              input.files = transfer.files;
+            }}
+          }}
+
+          return true;
+
+        }} catch (error) {{
+          console.error("Image compression error:", error);
+          return true;
+
+        }} finally {{
+          if (submitButton) {{
+            submitButton.disabled = false;
+            submitButton.textContent = submitButton.dataset.originalText || "Save";
+          }}
+        }}
+      }}
       async function openScanner(targetInputId) {{
         const modal = document.getElementById('ai-scanner-modal');
         const imgEl = document.getElementById('ai-scanner-img');
@@ -2144,7 +2238,29 @@ def render_purchase_form_and_table():
 
     # Smartphone-friendly vertical form
     form = f"""<div class="card"><h3>New Entry</h3>
-    <form method="post" enctype="multipart/form-data">
+    <form method="post" enctype="multipart/form-data"       onsubmit="return handleAttachmentSubmit(event, this)">
+          async function handleAttachmentSubmit(event, form) {{
+        if (form.dataset.compressionDone === "yes") {{
+          return true;
+        }}
+
+        event.preventDefault();
+
+        const submitButton = form.querySelector('button[type="submit"]');
+
+        if (submitButton) {{
+          submitButton.dataset.originalText = submitButton.textContent;
+          submitButton.disabled = true;
+          submitButton.textContent = "Preparing files...";
+        }}
+
+        await compressSelectedAttachments(form);
+
+        form.dataset.compressionDone = "yes";
+        form.submit();
+
+        return false;
+      }}
     <input type="hidden" name="action" value="add">
 
     <label>Date</label>
@@ -2331,7 +2447,29 @@ def purchase_edit(row_id):
     <p><b>Originally entered by:</b> {escape(str(row.get('created_by') or 'unknown'))} |
     <b>Current files:</b> {file_links_html(row.get('file1_link'), row.get('file2_link'))}</p>
 
-    <form method="post" enctype="multipart/form-data">
+    <form method="post" enctype="multipart/form-data"       onsubmit="return handleAttachmentSubmit(event, this)">
+          async function handleAttachmentSubmit(event, form) {{
+        if (form.dataset.compressionDone === "yes") {{
+          return true;
+        }}
+
+        event.preventDefault();
+
+        const submitButton = form.querySelector('button[type="submit"]');
+
+        if (submitButton) {{
+          submitButton.dataset.originalText = submitButton.textContent;
+          submitButton.disabled = true;
+          submitButton.textContent = "Preparing files...";
+        }}
+
+        await compressSelectedAttachments(form);
+
+        form.dataset.compressionDone = "yes";
+        form.submit();
+
+        return false;
+      }}
 
     <label>Date</label>
     <input type="date" name="entry_date" value="{escape(str(row.get('entry_date') or ''))}" required>
@@ -2447,7 +2585,29 @@ def challans_page():
     today = datetime.today().strftime("%Y-%m-%d")
 
     form = f"""<div class="card"><h3>Start / Load a Challan</h3>
-    <form method="post" enctype="multipart/form-data">
+    <form method="post" enctype="multipart/form-data"       onsubmit="return handleAttachmentSubmit(event, this)">
+          async function handleAttachmentSubmit(event, form) {{
+        if (form.dataset.compressionDone === "yes") {{
+          return true;
+        }}
+
+        event.preventDefault();
+
+        const submitButton = form.querySelector('button[type="submit"]');
+
+        if (submitButton) {{
+          submitButton.dataset.originalText = submitButton.textContent;
+          submitButton.disabled = true;
+          submitButton.textContent = "Preparing files...";
+        }}
+
+        await compressSelectedAttachments(form);
+
+        form.dataset.compressionDone = "yes";
+        form.submit();
+
+        return false;
+      }}
 
     <label>Challan Number</label>
     <input type="text" name="challan_number" placeholder="Challan number" required>
@@ -2564,7 +2724,29 @@ def challan_edit(challan_id):
     <b>Originally entered by:</b> {escape(str(challan.get('created_by') or 'unknown'))} |
     <b>Current files:</b> {file_links_html(challan.get('file1_link'), challan.get('file2_link'))}</p>
 
-    <form method="post" enctype="multipart/form-data">
+    <form method="post" enctype="multipart/form-data"       onsubmit="return handleAttachmentSubmit(event, this)">
+          async function handleAttachmentSubmit(event, form) {{
+        if (form.dataset.compressionDone === "yes") {{
+          return true;
+        }}
+
+        event.preventDefault();
+
+        const submitButton = form.querySelector('button[type="submit"]');
+
+        if (submitButton) {{
+          submitButton.dataset.originalText = submitButton.textContent;
+          submitButton.disabled = true;
+          submitButton.textContent = "Preparing files...";
+        }}
+
+        await compressSelectedAttachments(form);
+
+        form.dataset.compressionDone = "yes";
+        form.submit();
+
+        return false;
+      }}
 
     <label>Date</label>
     <input type="date" name="challan_date" value="{escape(str(challan['challan_date']))}" required>
