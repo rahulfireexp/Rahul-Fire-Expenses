@@ -1797,11 +1797,13 @@ def page(title, body, msg=None, msg_type="ok"):
     </style>
     <script>
       let cropper = null;
-            async function compressImageFile(file) {{
+      
+                  async function compressImageFile(file) {{
         if (!file || !file.type.startsWith("image/")) {{
           return file;
         }}
 
+        /* Do not spend time compressing already-small photos. */
         if (file.size <= 1200 * 1024) {{
           return file;
         }}
@@ -1851,47 +1853,56 @@ def page(title, body, msg=None, msg_type="ok"):
       }}
 
       async function compressSelectedAttachments(form) {{
+        const inputs = form.querySelectorAll(
+          'input[type="file"][name="attachments"]'
+        );
+
+        for (const input of inputs) {{
+          if (!input.files || input.files.length === 0) {{
+            continue;
+          }}
+
+          const originalFile = input.files[0];
+          const compressedFile = await compressImageFile(originalFile);
+
+          if (compressedFile !== originalFile) {{
+            const transfer = new DataTransfer();
+            transfer.items.add(compressedFile);
+            input.files = transfer.files;
+          }}
+        }}
+      }}
+
+      async function handleAttachmentSubmit(event, form) {{
+        if (form.dataset.compressionDone === "yes") {{
+          return true;
+        }}
+
+        event.preventDefault();
+
         const submitButton = form.querySelector(
           'button[type="submit"]'
         );
 
         if (submitButton) {{
           submitButton.disabled = true;
+          submitButton.dataset.originalText = submitButton.textContent;
           submitButton.textContent = "Preparing files...";
         }}
 
         try {{
-          const inputs = form.querySelectorAll(
-            'input[type="file"][name="attachments"]'
-          );
-
-          for (const input of inputs) {{
-            if (!input.files || input.files.length === 0) {{
-              continue;
-            }}
-
-            const originalFile = input.files[0];
-            const compressedFile = await compressImageFile(originalFile);
-
-            if (compressedFile !== originalFile) {{
-              const transfer = new DataTransfer();
-              transfer.items.add(compressedFile);
-              input.files = transfer.files;
-            }}
-          }}
-
-          return true;
-
+          await compressSelectedAttachments(form);
+          form.dataset.compressionDone = "yes";
+          form.submit();
         }} catch (error) {{
-          console.error("Image compression error:", error);
-          return true;
+          console.error("Attachment preparation failed:", error);
 
-        }} finally {{
-          if (submitButton) {{
-            submitButton.disabled = false;
-            submitButton.textContent = submitButton.dataset.originalText || "Save";
-          }}
+          /* Save the entry even if optional compression fails. */
+          form.dataset.compressionDone = "yes";
+          form.submit();
         }}
+
+        return false;
       }}
       async function openScanner(targetInputId) {{
         const modal = document.getElementById('ai-scanner-modal');
@@ -2236,31 +2247,28 @@ def render_purchase_form_and_table():
     pm_opts = "".join(f'<option value="{p}">{p}</option>' for p in PAYMENT_MODES)
     today = datetime.today().strftime("%Y-%m-%d")
 
-    # Smartphone-friendly vertical form
+   # ---------------------------------------------------------------------------
+# Purchase form and routes
+# ---------------------------------------------------------------------------
+
+def render_purchase_form_and_table():
+    sites_opts = "".join(
+        f'<option value="{escape(s)}">{escape(s)}</option>'
+        for s in get_sites()
+    )
+    emp_opts = "".join(
+        f'<option value="{escape(e)}">{escape(e)}</option>'
+        for e in get_employees()
+    )
+    pm_opts = "".join(
+        f'<option value="{escape(p)}">{escape(p)}</option>'
+        for p in PAYMENT_MODES
+    )
+    today = datetime.today().strftime("%Y-%m-%d")
+
     form = f"""<div class="card"><h3>New Entry</h3>
-    <form method="post" enctype="multipart/form-data"       onsubmit="return handleAttachmentSubmit(event, this)">
-          async function handleAttachmentSubmit(event, form) {{
-        if (form.dataset.compressionDone === "yes") {{
-          return true;
-        }}
-
-        event.preventDefault();
-
-        const submitButton = form.querySelector('button[type="submit"]');
-
-        if (submitButton) {{
-          submitButton.dataset.originalText = submitButton.textContent;
-          submitButton.disabled = true;
-          submitButton.textContent = "Preparing files...";
-        }}
-
-        await compressSelectedAttachments(form);
-
-        form.dataset.compressionDone = "yes";
-        form.submit();
-
-        return false;
-      }}
+    <form method="post" enctype="multipart/form-data"
+          onsubmit="return handleAttachmentSubmit(event, this)">
     <input type="hidden" name="action" value="add">
 
     <label>Date</label>
@@ -2318,26 +2326,72 @@ def render_purchase_form_and_table():
       <button type="submit" style="width:100%;font-size:1.05rem;">Add Entry</button>
     </div>
     </form></div>"""
-    
+
     rows = ""
+
     for r in get_purchases():
-        allowed, _ = can_modify_entry(r.get("created_by", ""), r.get("created_at", ""))
-        edit_btn = f'<a href="/purchase/{r.get("id")}/edit"><button type="button" class="edit">Edit</button></a>' if allowed else '<button type="button" disabled>Locked</button>'
-        del_btn = (f'<form class="inline" method="post" onsubmit="return confirm(\'Delete this entry?\');">'
-                   f'<input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="{r.get("id")}">'
-                   f'<button type="submit" class="danger">Delete</button></form>') if allowed else ""
-        rows += f"""<tr><td>{r.get('id')}</td><td>{escape(str(r.get('entry_date') or ''))}</td>
-        <td>{escape(str(r.get('purchaser') or ''))}</td><td>{escape(str(r.get('vendor') or ''))}</td>
-        <td>{escape(str(r.get('invoice_no') or ''))}</td><td>{float(r.get('amount') or 0):,.2f}</td>
-        <td>{escape(str(r.get('payment_mode') or ''))}</td><td>{escape(str(r.get('payment_detail') or ''))}</td>
-        <td>{escape(str(r.get('payment_date') or ''))}</td><td>{escape(str(r.get('site_name') or ''))}</td>
-        <td>{escape(str(r.get('challan_number') or ''))}</td><td>{escape(str(r.get('notes') or ''))}</td>
+        allowed, _ = can_modify_entry(
+            r.get("created_by", ""),
+            r.get("created_at", "")
+        )
+
+        edit_btn = (
+            f'<a href="/purchase/{r.get("id")}/edit">'
+            f'<button type="button" class="edit">Edit</button></a>'
+            if allowed
+            else '<button type="button" disabled>Locked</button>'
+        )
+
+        del_btn = (
+            f'<form class="inline" method="post" '
+            f'onsubmit="return confirm(\'Delete this entry?\');">'
+            f'<input type="hidden" name="action" value="delete">'
+            f'<input type="hidden" name="id" value="{r.get("id")}">'
+            f'<button type="submit" class="danger">Delete</button>'
+            f'</form>'
+            if allowed
+            else ""
+        )
+
+        rows += f"""<tr>
+        <td>{r.get('id')}</td>
+        <td>{escape(str(r.get('entry_date') or ''))}</td>
+        <td>{escape(str(r.get('purchaser') or ''))}</td>
+        <td>{escape(str(r.get('vendor') or ''))}</td>
+        <td>{escape(str(r.get('invoice_no') or ''))}</td>
+        <td>{float(r.get('amount') or 0):,.2f}</td>
+        <td>{escape(str(r.get('payment_mode') or ''))}</td>
+        <td>{escape(str(r.get('payment_detail') or ''))}</td>
+        <td>{escape(str(r.get('payment_date') or ''))}</td>
+        <td>{escape(str(r.get('site_name') or ''))}</td>
+        <td>{escape(str(r.get('challan_number') or ''))}</td>
+        <td>{escape(str(r.get('notes') or ''))}</td>
         <td><b>{escape(str(r.get('created_by') or ''))}</b></td>
         <td>{file_links_html(r.get('file1_link'), r.get('file2_link'))}</td>
-        <td class="actions">{edit_btn} {del_btn}</td></tr>"""
-    table = f"""<div class="scroll-table"><table><tr><th>ID</th><th>Date</th><th>Purchaser</th><th>Vendor</th><th>Invoice</th>
-    <th>Amount</th><th>Mode</th><th>Detail</th><th>Pay Date</th><th>Site</th><th>Challan</th><th>Notes</th>
-    <th>Entered By</th><th>Files</th><th></th></tr>{rows}</table></div>"""
+        <td class="actions">{edit_btn} {del_btn}</td>
+        </tr>"""
+
+    table = f"""<div class="scroll-table"><table>
+    <tr>
+      <th>ID</th>
+      <th>Date</th>
+      <th>Purchaser</th>
+      <th>Vendor</th>
+      <th>Invoice</th>
+      <th>Amount</th>
+      <th>Mode</th>
+      <th>Detail</th>
+      <th>Pay Date</th>
+      <th>Site</th>
+      <th>Challan</th>
+      <th>Notes</th>
+      <th>Entered By</th>
+      <th>Files</th>
+      <th></th>
+    </tr>
+    {rows}
+    </table></div>"""
+
     return form + table
 
 
@@ -2345,167 +2399,262 @@ def render_purchase_form_and_table():
 @login_required
 def purchase_page():
     msg, msg_type = None, "ok"
+
     if request.method == "POST":
         action = request.form.get("action")
+
         if action == "delete":
             row_id = request.form.get("id")
             row = get_purchase_row(row_id)
-            allowed, reason = can_modify_entry(row.get("created_by", ""), row.get("created_at", "")) if row else (False, "Not found.")
+
+            allowed, reason = (
+                can_modify_entry(
+                    row.get("created_by", ""),
+                    row.get("created_at", "")
+                )
+                if row
+                else (False, "Not found.")
+            )
+
             if not allowed:
                 msg, msg_type = reason, "error"
             else:
                 delete_purchase(row_id)
                 msg = "Entry deleted."
+
         else:
             f = request.form
             date_ = f.get("entry_date", "").strip()
             site = f.get("site_name", "").strip()
+            vendor = f.get("vendor", "").strip()
+            invoice_no = f.get("invoice_no", "").strip()
+
             try:
                 amount = float(f.get("amount") or 0)
             except ValueError:
                 amount = 0.0
-            vendor = f.get("vendor", "").strip()
-            invoice_no = f.get("invoice_no", "").strip()
-            vendor = vendor.strip()
+
             if not date_ or not site:
                 msg, msg_type = "Date and Site are required.", "error"
+
             elif not vendor:
                 msg, msg_type = "Vendor name is required.", "error"
+
             elif amount <= 0:
                 msg, msg_type = "Amount must be greater than 0.", "error"
+
             else:
                 files = request.files.getlist("attachments")
-                ok, ferr = validate_uploaded_files([x for x in files if x and x.filename])
+                real_files = [x for x in files if x and x.filename]
+
+                ok, ferr = validate_uploaded_files(real_files)
+
                 if not ok:
                     msg, msg_type = ferr, "error"
-                    return page("Purchase Entry", render_purchase_form_and_table(), msg, msg_type)
-                if invoice_no and check_duplicate_purchase(date_, vendor, invoice_no, amount) and f.get("confirm_dup") != "1":
-                    msg, msg_type = "Possible duplicate found. Submit again to confirm and add anyway.", "error"
-                    return page("Purchase Entry", render_purchase_form_and_table(), msg, msg_type)
-                new_id = insert_purchase({
-                    "entry_date": date_, "purchaser": f.get("purchaser", "").strip(), "vendor": vendor,
-                    "invoice_no": invoice_no, "amount": amount, "payment_mode": f.get("payment_mode", "").strip(),
-                    "payment_detail": f.get("payment_detail", "").strip(), "payment_date": f.get("payment_date", "").strip(),
-                    "site_name": site, "challan_number": f.get("challan_number", "").strip(),
-                    "notes": f.get("notes", "").strip()}, current_user(), files=files)
+                    return page(
+                        "Purchase Entry",
+                        render_purchase_form_and_table(),
+                        msg,
+                        msg_type
+                    )
+
+                if (
+                    invoice_no
+                    and check_duplicate_purchase(
+                        date_,
+                        vendor,
+                        invoice_no,
+                        amount
+                    )
+                    and f.get("confirm_dup") != "1"
+                ):
+                    msg = (
+                        "Possible duplicate found. "
+                        "Submit again to confirm and add anyway."
+                    )
+                    msg_type = "error"
+
+                    return page(
+                        "Purchase Entry",
+                        render_purchase_form_and_table(),
+                        msg,
+                        msg_type
+                    )
+
+                insert_purchase(
+                    {
+                        "entry_date": date_,
+                        "purchaser": f.get("purchaser", "").strip(),
+                        "vendor": vendor,
+                        "invoice_no": invoice_no,
+                        "amount": amount,
+                        "payment_mode": f.get("payment_mode", "").strip(),
+                        "payment_detail": f.get("payment_detail", "").strip(),
+                        "payment_date": f.get("payment_date", "").strip(),
+                        "site_name": site,
+                        "challan_number": f.get("challan_number", "").strip(),
+                        "notes": f.get("notes", "").strip()
+                    },
+                    current_user(),
+                    files=files
+                )
+
                 msg = "Entry added."
-    return page("Purchase Entry", render_purchase_form_and_table(), msg, msg_type)
+
+    return page(
+        "Purchase Entry",
+        render_purchase_form_and_table(),
+        msg,
+        msg_type
+    )
 
 
 @app.route("/purchase/<row_id>/edit", methods=["GET", "POST"])
 @login_required
 def purchase_edit(row_id):
     row = get_purchase_row(row_id)
+
     if not row:
         return redirect(url_for("purchase_page"))
-    allowed, reason = can_modify_entry(row.get("created_by", ""), row.get("created_at", ""))
+
+    allowed, reason = can_modify_entry(
+        row.get("created_by", ""),
+        row.get("created_at", "")
+    )
+
     if not allowed:
-        return page("Cannot Edit", f"<p>{escape(reason)}</p><p><a href='/purchase'>Back</a></p>", reason, "error")
+        return page(
+            "Cannot Edit",
+            f"<p>{escape(reason)}</p><p><a href='/purchase'>Back</a></p>",
+            reason,
+            "error"
+        )
 
     msg, msg_type = None, "ok"
+
     if request.method == "POST":
         f = request.form
         date_ = f.get("entry_date", "").strip()
         site = f.get("site_name", "").strip()
+
         try:
             amount = float(f.get("amount") or 0)
         except ValueError:
             amount = 0.0
+
         if not date_ or not site:
             msg, msg_type = "Date and Site are required.", "error"
+
         else:
             files = request.files.getlist("attachments")
             real_files = [x for x in files if x and x.filename]
+
             ok, ferr = validate_uploaded_files(real_files)
+
             if not ok:
                 msg, msg_type = ferr, "error"
+
             else:
                 record = {
-                    "entry_date": date_, "purchaser": f.get("purchaser", "").strip(), "vendor": f.get("vendor", "").strip(),
-                    "invoice_no": f.get("invoice_no", "").strip(), "amount": amount, "payment_mode": f.get("payment_mode", "").strip(),
-                    "payment_detail": f.get("payment_detail", "").strip(), "payment_date": f.get("payment_date", "").strip(),
-                    "site_name": site, "challan_number": f.get("challan_number", "").strip(), "notes": f.get("notes", "").strip()
+                    "entry_date": date_,
+                    "purchaser": f.get("purchaser", "").strip(),
+                    "vendor": f.get("vendor", "").strip(),
+                    "invoice_no": f.get("invoice_no", "").strip(),
+                    "amount": amount,
+                    "payment_mode": f.get("payment_mode", "").strip(),
+                    "payment_detail": f.get("payment_detail", "").strip(),
+                    "payment_date": f.get("payment_date", "").strip(),
+                    "site_name": site,
+                    "challan_number": f.get("challan_number", "").strip(),
+                    "notes": f.get("notes", "").strip()
                 }
-                if real_files:
-                    f1, f2, uerr = process_file_uploads_with_site(real_files, "PUR", str(row_id), record["site_name"])
-                    if uerr:
-                        msg, msg_type = f"Could not update files: {uerr}", "error"
-                        return page(f"Edit Purchase Entry #{row_id}", "", msg, msg_type)
-                    if f1:
-                        record["file1_link"] = f1
-                    if f2:
-                        record["file2_link"] = f2
-                update_purchase(row_id, record, files=files if real_files else None)
+
+                update_purchase(
+                    row_id,
+                    record,
+                    files=files if real_files else None
+                )
+
                 return redirect(url_for("purchase_page"))
+
         row = get_purchase_row(row_id)
 
-    sites_opts = "".join(f'<option value="{escape(s)}" {"selected" if s == row.get("site_name") else ""}>{escape(s)}</option>' for s in get_sites())
-    emp_opts = "".join(f'<option value="{escape(e)}" {"selected" if e == row.get("purchaser") else ""}>{escape(e)}</option>' for e in get_employees())
-    pm_opts = "".join(f'<option value="{p}" {"selected" if p == row.get("payment_mode") else ""}>{p}</option>' for p in PAYMENT_MODES)
+    sites_opts = "".join(
+        f'<option value="{escape(s)}" '
+        f'{"selected" if s == row.get("site_name") else ""}>'
+        f'{escape(s)}</option>'
+        for s in get_sites()
+    )
+
+    emp_opts = "".join(
+        f'<option value="{escape(e)}" '
+        f'{"selected" if e == row.get("purchaser") else ""}>'
+        f'{escape(e)}</option>'
+        for e in get_employees()
+    )
+
+    pm_opts = "".join(
+        f'<option value="{escape(p)}" '
+        f'{"selected" if p == row.get("payment_mode") else ""}>'
+        f'{escape(p)}</option>'
+        for p in PAYMENT_MODES
+    )
 
     body = f"""<div class="card">
-    <p><b>Originally entered by:</b> {escape(str(row.get('created_by') or 'unknown'))} |
-    <b>Current files:</b> {file_links_html(row.get('file1_link'), row.get('file2_link'))}</p>
+    <p>
+      <b>Originally entered by:</b>
+      {escape(str(row.get('created_by') or 'unknown'))}
+      |
+      <b>Current files:</b>
+      {file_links_html(row.get('file1_link'), row.get('file2_link'))}
+    </p>
 
-    <form method="post" enctype="multipart/form-data"       onsubmit="return handleAttachmentSubmit(event, this)">
-          async function handleAttachmentSubmit(event, form) {{
-        if (form.dataset.compressionDone === "yes") {{
-          return true;
-        }}
-
-        event.preventDefault();
-
-        const submitButton = form.querySelector('button[type="submit"]');
-
-        if (submitButton) {{
-          submitButton.dataset.originalText = submitButton.textContent;
-          submitButton.disabled = true;
-          submitButton.textContent = "Preparing files...";
-        }}
-
-        await compressSelectedAttachments(form);
-
-        form.dataset.compressionDone = "yes";
-        form.submit();
-
-        return false;
-      }}
+    <form method="post" enctype="multipart/form-data"
+          onsubmit="return handleAttachmentSubmit(event, this)">
 
     <label>Date</label>
-    <input type="date" name="entry_date" value="{escape(str(row.get('entry_date') or ''))}" required>
+    <input type="date" name="entry_date"
+           value="{escape(str(row.get('entry_date') or ''))}" required>
 
     <label>Purchaser</label>
     <select name="purchaser">{emp_opts}</select>
 
     <label>Vendor/Details</label>
-    <input type="text" name="vendor" value="{escape(str(row.get('vendor') or ''))}">
+    <input type="text" name="vendor"
+           value="{escape(str(row.get('vendor') or ''))}">
 
     <label>Invoice No.</label>
-    <input type="text" name="invoice_no" value="{escape(str(row.get('invoice_no') or ''))}">
+    <input type="text" name="invoice_no"
+           value="{escape(str(row.get('invoice_no') or ''))}">
 
     <label>Amount (with GST)</label>
-    <input type="number" step="0.01" name="amount" value="{row.get('amount')}">
+    <input type="number" step="0.01" name="amount"
+           value="{escape(str(row.get('amount') or ''))}">
 
     <label>Payment Mode</label>
     <select name="payment_mode">{pm_opts}</select>
 
     <label>Payment Detail</label>
-    <input type="text" name="payment_detail" value="{escape(str(row.get('payment_detail') or ''))}">
+    <input type="text" name="payment_detail"
+           value="{escape(str(row.get('payment_detail') or ''))}">
 
     <label>Payment Date</label>
-    <input type="date" name="payment_date" value="{escape(str(row.get('payment_date') or ''))}">
+    <input type="date" name="payment_date"
+           value="{escape(str(row.get('payment_date') or ''))}">
 
     <label>Site Name</label>
     <select name="site_name">{sites_opts}</select>
 
     <label>Challan Number</label>
-    <input type="text" name="challan_number" value="{escape(str(row.get('challan_number') or ''))}">
+    <input type="text" name="challan_number"
+           value="{escape(str(row.get('challan_number') or ''))}">
 
     <label>Notes / Remarks</label>
     <textarea name="notes" rows="3">{escape(str(row.get('notes') or ''))}</textarea>
 
     <label>Replace file 1 (JPG/JPEG/PDF)</label>
-    <input type="file" id="purchase_edit_file1" name="attachments" accept=".jpg,.jpeg,.pdf">
+    <input type="file" id="purchase_edit_file1" name="attachments"
+           accept=".jpg,.jpeg,.pdf">
     <button type="button"
             onclick="currentScannerTarget='purchase_edit_file1'; openScanner('purchase_edit_file1');"
             class="btn"
@@ -2514,7 +2663,8 @@ def purchase_edit(row_id):
     </button>
 
     <label>Replace file 2 (JPG/JPEG/PDF)</label>
-    <input type="file" id="purchase_edit_file2" name="attachments" accept=".jpg,.jpeg,.pdf">
+    <input type="file" id="purchase_edit_file2" name="attachments"
+           accept=".jpg,.jpeg,.pdf">
     <button type="button"
             onclick="currentScannerTarget='purchase_edit_file2'; openScanner('purchase_edit_file2');"
             class="btn"
@@ -2522,95 +2672,97 @@ def purchase_edit(row_id):
       Scan document with AI
     </button>
 
-    <div style="margin-top:0.6rem; display:flex; gap:0.5rem;">
-      <button type="submit" style="flex:1;font-size:1.05rem;">Save Changes</button>
+    <div style="margin-top:0.6rem;display:flex;gap:0.5rem;">
+      <button type="submit" style="flex:1;font-size:1.05rem;">
+        Save Changes
+      </button>
       <a href="/purchase" style="flex:1;text-decoration:none;">
-        <button type="button" class="secondary" style="width:100%;font-size:1.05rem;">Cancel</button>
+        <button type="button" class="secondary"
+                style="width:100%;font-size:1.05rem;">
+          Cancel
+        </button>
       </a>
     </div>
     </form></div>"""
 
-  # ---------------------------------------------------------------------------
-# Routes: Challans (with file upload + permission-gated editing)
+    return page(f"Edit Purchase Entry #{row_id}", body, msg, msg_type)
+
+
 # ---------------------------------------------------------------------------
+# Routes: Challans
+# ---------------------------------------------------------------------------
+
 @app.route("/challans", methods=["GET", "POST"])
 @login_required
 def challans_page():
     msg, msg_type = None, "ok"
-
-    # Define sites_opts here so it exists for both GET and POST
-    sites_opts = "".join(
-        f'<option value="{escape(s)}">{escape(s)}</option>' for s in get_sites()
-    )
 
     if request.method == "POST":
         f = request.form
         challan_no = f.get("challan_number", "").strip()
         challan_date = f.get("challan_date", "").strip()
         site = f.get("site_name", "").strip()
-        ...
+
         if not challan_no or not challan_date or not site:
-            msg, msg_type = "Challan Number, Date, and Site are required.", "error"
+            msg, msg_type = (
+                "Challan Number, Date, and Site are required.",
+                "error"
+            )
+
         else:
             mismatch = challan_date_mismatch(challan_no, challan_date)
+
             if mismatch:
-                msg, msg_type = f"Challan '{challan_no}' already exists with date {mismatch}.", "error"
+                msg, msg_type = (
+                    f"Challan '{challan_no}' already exists with date {mismatch}.",
+                    "error"
+                )
+
             else:
                 files = request.files.getlist("attachments")
                 real_files = [x for x in files if x and x.filename]
+
                 ok, ferr = validate_uploaded_files(real_files)
+
                 if not ok:
                     msg, msg_type = ferr, "error"
+
                 else:
                     cid = get_or_create_challan(
-                        challan_no, challan_date, site,
+                        challan_no,
+                        challan_date,
+                        site,
                         f.get("vehicle_number", "").strip(),
                         f.get("driver_name", "").strip(),
                         current_user()
                     )
-                    if real_files:
-                        f1, f2, uerr = process_file_uploads_with_site(real_files, "CH", challan_no, site)
-                        if uerr:
-                            msg, msg_type = uerr, "error"
-                        else:
-                            update_challan_header(
-                                cid, challan_date, site,
-                                f.get("vehicle_number", "").strip(),
-                                f.get("driver_name", "").strip(),
-                                f1, f2, files=real_files
-                            )
-                    return redirect(url_for("challan_detail", challan_id=cid))
 
-    sites_opts = "".join(f'<option value="{escape(s)}">{escape(s)}</option>' for s in get_sites())
+                    update_challan_header(
+                        cid,
+                        challan_date,
+                        site,
+                        f.get("vehicle_number", "").strip(),
+                        f.get("driver_name", "").strip(),
+                        files=real_files if real_files else None
+                    )
+
+                    return redirect(
+                        url_for("challan_detail", challan_id=cid)
+                    )
+
+    sites_opts = "".join(
+        f'<option value="{escape(s)}">{escape(s)}</option>'
+        for s in get_sites()
+    )
     today = datetime.today().strftime("%Y-%m-%d")
 
     form = f"""<div class="card"><h3>Start / Load a Challan</h3>
-    <form method="post" enctype="multipart/form-data"       onsubmit="return handleAttachmentSubmit(event, this)">
-          async function handleAttachmentSubmit(event, form) {{
-        if (form.dataset.compressionDone === "yes") {{
-          return true;
-        }}
-
-        event.preventDefault();
-
-        const submitButton = form.querySelector('button[type="submit"]');
-
-        if (submitButton) {{
-          submitButton.dataset.originalText = submitButton.textContent;
-          submitButton.disabled = true;
-          submitButton.textContent = "Preparing files...";
-        }}
-
-        await compressSelectedAttachments(form);
-
-        form.dataset.compressionDone = "yes";
-        form.submit();
-
-        return false;
-      }}
+    <form method="post" enctype="multipart/form-data"
+          onsubmit="return handleAttachmentSubmit(event, this)">
 
     <label>Challan Number</label>
-    <input type="text" name="challan_number" placeholder="Challan number" required>
+    <input type="text" name="challan_number"
+           placeholder="Challan number" required>
 
     <label>Date</label>
     <input type="date" name="challan_date" value="{today}" required>
@@ -2625,7 +2777,8 @@ def challans_page():
     <input type="text" name="driver_name" placeholder="Driver name">
 
     <label>Attach file 1 (JPG/JPEG/PDF)</label>
-    <input type="file" id="challan_file1" name="attachments" accept=".jpg,.jpeg,.pdf">
+    <input type="file" id="challan_file1" name="attachments"
+           accept=".jpg,.jpeg,.pdf">
     <button type="button"
             onclick="currentScannerTarget='challan_file1'; openScanner('challan_file1');"
             class="btn"
@@ -2634,7 +2787,8 @@ def challans_page():
     </button>
 
     <label>Attach file 2 (JPG/JPEG/PDF)</label>
-    <input type="file" id="challan_file2" name="attachments" accept=".jpg,.jpeg,.pdf">
+    <input type="file" id="challan_file2" name="attachments"
+           accept=".jpg,.jpeg,.pdf">
     <button type="button"
             onclick="currentScannerTarget='challan_file2'; openScanner('challan_file2');"
             class="btn"
@@ -2643,25 +2797,66 @@ def challans_page():
     </button>
 
     <div style="margin-top:0.6rem;">
-      <button type="submit" style="width:100%;font-size:1.05rem;">Start / Load Challan</button>
+      <button type="submit" style="width:100%;font-size:1.05rem;">
+        Start / Load Challan
+      </button>
     </div>
     </form></div>"""
 
     rows = ""
+
     for c in get_all_challans():
         n_items = len(get_items_for_challan(c["id"]))
-        allowed, _ = can_modify_entry(c.get("created_by", ""), c.get("created_at", ""))
-        edit_btn = f'<a href="/challans/{c["id"]}/edit"><button type="button" class="edit">Edit</button></a>' if allowed else '<button type="button" disabled>Locked</button>'
-        del_btn = (f'<form class="inline" method="post" action="/challans/{c["id"]}/delete" onsubmit="return confirm(\'Delete this challan and items?\');">'
-                   f'<button type="submit" class="danger">Delete</button></form>') if allowed else ""
-        rows += f"""<tr><td><a href="/challans/{c['id']}">{escape(str(c['challan_number']))}</a></td>
-        <td>{escape(str(c['challan_date']))}</td><td>{escape(str(c['site_name']))}</td>
-        <td>{escape(str(c.get('vehicle_number') or ''))}</td><td>{escape(str(c.get('driver_name') or ''))}</td><td>{n_items}</td>
+
+        allowed, _ = can_modify_entry(
+            c.get("created_by", ""),
+            c.get("created_at", "")
+        )
+
+        edit_btn = (
+            f'<a href="/challans/{c["id"]}/edit">'
+            f'<button type="button" class="edit">Edit</button></a>'
+            if allowed
+            else '<button type="button" disabled>Locked</button>'
+        )
+
+        del_btn = (
+            f'<form class="inline" method="post" '
+            f'action="/challans/{c["id"]}/delete" '
+            f'onsubmit="return confirm(\'Delete this challan and items?\');">'
+            f'<button type="submit" class="danger">Delete</button>'
+            f'</form>'
+            if allowed
+            else ""
+        )
+
+        rows += f"""<tr>
+        <td><a href="/challans/{c['id']}">{escape(str(c['challan_number']))}</a></td>
+        <td>{escape(str(c['challan_date']))}</td>
+        <td>{escape(str(c['site_name']))}</td>
+        <td>{escape(str(c.get('vehicle_number') or ''))}</td>
+        <td>{escape(str(c.get('driver_name') or ''))}</td>
+        <td>{n_items}</td>
         <td><b>{escape(str(c.get('created_by') or ''))}</b></td>
         <td>{file_links_html(c.get('file1_link'), c.get('file2_link'))}</td>
-        <td class="actions">{edit_btn} {del_btn}</td></tr>"""
-    table = f"""<div class="scroll-table"><table><tr><th>Challan No.</th><th>Date</th><th>Site</th><th>Vehicle</th><th>Driver</th>
-    <th>Items</th><th>Entered By</th><th>Files</th><th></th></tr>{rows}</table></div>"""
+        <td class="actions">{edit_btn} {del_btn}</td>
+        </tr>"""
+
+    table = f"""<div class="scroll-table"><table>
+    <tr>
+      <th>Challan No.</th>
+      <th>Date</th>
+      <th>Site</th>
+      <th>Vehicle</th>
+      <th>Driver</th>
+      <th>Items</th>
+      <th>Entered By</th>
+      <th>Files</th>
+      <th></th>
+    </tr>
+    {rows}
+    </table></div>"""
+
     return page("Challans", form + table, msg, msg_type)
 
 
@@ -2669,10 +2864,16 @@ def challans_page():
 @login_required
 def challan_delete_route(challan_id):
     challan = get_challan(challan_id)
+
     if challan:
-        allowed, reason = can_modify_entry(challan.get("created_by", ""), challan.get("created_at", ""))
+        allowed, _ = can_modify_entry(
+            challan.get("created_by", ""),
+            challan.get("created_at", "")
+        )
+
         if allowed:
             delete_challan(challan_id)
+
     return redirect(url_for("challans_page"))
 
 
@@ -2680,88 +2881,107 @@ def challan_delete_route(challan_id):
 @login_required
 def challan_edit(challan_id):
     challan = get_challan(challan_id)
+
     if not challan:
         return redirect(url_for("challans_page"))
-    allowed, reason = can_modify_entry(challan.get("created_by", ""), challan.get("created_at", ""))
+
+    allowed, reason = can_modify_entry(
+        challan.get("created_by", ""),
+        challan.get("created_at", "")
+    )
+
     if not allowed:
-        return page("Cannot Edit", f"<p>{escape(reason)}</p><p><a href='/challans'>Back</a></p>", reason, "error")
+        return page(
+            "Cannot Edit",
+            f"<p>{escape(reason)}</p><p><a href='/challans'>Back</a></p>",
+            reason,
+            "error"
+        )
 
     msg, msg_type = None, "ok"
+
     if request.method == "POST":
         f = request.form
         challan_date = f.get("challan_date", "").strip()
         site = f.get("site_name", "").strip()
-        mismatch = challan_date_mismatch(challan["challan_number"], challan_date, exclude_id=challan_id)
+
+        mismatch = challan_date_mismatch(
+            challan["challan_number"],
+            challan_date,
+            exclude_id=challan_id
+        )
+
         if mismatch:
-            msg, msg_type = f"Another challan with the same number already uses date {mismatch}.", "error"
+            msg, msg_type = (
+                f"Another challan with the same number already uses date {mismatch}.",
+                "error"
+            )
+
         else:
             files = request.files.getlist("attachments")
             real_files = [x for x in files if x and x.filename]
+
             ok, ferr = validate_uploaded_files(real_files)
+
             if not ok:
                 msg, msg_type = ferr, "error"
+
             else:
-                f1, f2 = None, None
-                if real_files:
-                    f1, f2, uerr = process_file_uploads_with_site(real_files, "CH", challan["challan_number"], site)
-                    if uerr:
-                        msg, msg_type = uerr, "error"
-                        challan = get_challan(challan_id)
-                        return page(f"Edit Challan {challan['challan_number']}", "", msg, msg_type)
                 update_challan_header(
-                    challan_id, challan_date, site,
+                    challan_id,
+                    challan_date,
+                    site,
                     f.get("vehicle_number", "").strip(),
                     f.get("driver_name", "").strip(),
-                    f1, f2, files=real_files
+                    files=real_files if real_files else None
                 )
-                return redirect(url_for("challan_detail", challan_id=challan_id))
+
+                return redirect(
+                    url_for("challan_detail", challan_id=challan_id)
+                )
+
         challan = get_challan(challan_id)
 
-    sites_opts = "".join(f'<option value="{escape(s)}" {"selected" if s == challan["site_name"] else ""}>{escape(s)}</option>' for s in get_sites())
+    sites_opts = "".join(
+        f'<option value="{escape(s)}" '
+        f'{"selected" if s == challan["site_name"] else ""}>'
+        f'{escape(s)}</option>'
+        for s in get_sites()
+    )
 
     body = f"""<div class="card">
-    <p><b>Challan Number:</b> {escape(str(challan['challan_number']))} (fixed) |
-    <b>Originally entered by:</b> {escape(str(challan.get('created_by') or 'unknown'))} |
-    <b>Current files:</b> {file_links_html(challan.get('file1_link'), challan.get('file2_link'))}</p>
+    <p>
+      <b>Challan Number:</b>
+      {escape(str(challan['challan_number']))} (fixed)
+      |
+      <b>Originally entered by:</b>
+      {escape(str(challan.get('created_by') or 'unknown'))}
+      |
+      <b>Current files:</b>
+      {file_links_html(challan.get('file1_link'), challan.get('file2_link'))}
+    </p>
 
-    <form method="post" enctype="multipart/form-data"       onsubmit="return handleAttachmentSubmit(event, this)">
-          async function handleAttachmentSubmit(event, form) {{
-        if (form.dataset.compressionDone === "yes") {{
-          return true;
-        }}
-
-        event.preventDefault();
-
-        const submitButton = form.querySelector('button[type="submit"]');
-
-        if (submitButton) {{
-          submitButton.dataset.originalText = submitButton.textContent;
-          submitButton.disabled = true;
-          submitButton.textContent = "Preparing files...";
-        }}
-
-        await compressSelectedAttachments(form);
-
-        form.dataset.compressionDone = "yes";
-        form.submit();
-
-        return false;
-      }}
+    <form method="post" enctype="multipart/form-data"
+          onsubmit="return handleAttachmentSubmit(event, this)">
 
     <label>Date</label>
-    <input type="date" name="challan_date" value="{escape(str(challan['challan_date']))}" required>
+    <input type="date" name="challan_date"
+           value="{escape(str(challan['challan_date']))}" required>
 
     <label>Site</label>
     <select name="site_name">{sites_opts}</select>
 
     <label>Vehicle Number</label>
-    <input type="text" name="vehicle_number" value="{escape(str(challan.get('vehicle_number') or ''))}">
+    <input type="text" name="vehicle_number"
+           value="{escape(str(challan.get('vehicle_number') or ''))}">
 
     <label>Driver Name</label>
-    <input type="text" name="driver_name" value="{escape(str(challan.get('driver_name') or ''))}">
+    <input type="text" name="driver_name"
+           value="{escape(str(challan.get('driver_name') or ''))}">
 
     <label>Replace file 1 (JPG/JPEG/PDF)</label>
-    <input type="file" id="challan_edit_file1" name="attachments" accept=".jpg,.jpeg,.pdf">
+    <input type="file" id="challan_edit_file1" name="attachments"
+           accept=".jpg,.jpeg,.pdf">
     <button type="button"
             onclick="currentScannerTarget='challan_edit_file1'; openScanner('challan_edit_file1');"
             class="btn"
@@ -2770,7 +2990,8 @@ def challan_edit(challan_id):
     </button>
 
     <label>Replace file 2 (JPG/JPEG/PDF)</label>
-    <input type="file" id="challan_edit_file2" name="attachments" accept=".jpg,.jpeg,.pdf">
+    <input type="file" id="challan_edit_file2" name="attachments"
+           accept=".jpg,.jpeg,.pdf">
     <button type="button"
             onclick="currentScannerTarget='challan_edit_file2'; openScanner('challan_edit_file2');"
             class="btn"
@@ -2778,15 +2999,25 @@ def challan_edit(challan_id):
       Scan document with AI
     </button>
 
-    <div style="margin-top:0.6rem; display:flex; gap:0.5rem;">
-      <button type="submit" style="flex:1;font-size:1.05rem;">Save Changes</button>
+    <div style="margin-top:0.6rem;display:flex;gap:0.5rem;">
+      <button type="submit" style="flex:1;font-size:1.05rem;">
+        Save Changes
+      </button>
       <a href="/challans/{challan_id}" style="flex:1;text-decoration:none;">
-        <button type="button" class="secondary" style="width:100%;font-size:1.05rem;">Cancel</button>
+        <button type="button" class="secondary"
+                style="width:100%;font-size:1.05rem;">
+          Cancel
+        </button>
       </a>
     </div>
     </form></div>"""
-    return page(f"Edit Challan {challan['challan_number']}", body, msg, msg_type)
 
+    return page(
+        f"Edit Challan {challan['challan_number']}",
+        body,
+        msg,
+        msg_type
+    )
 
 # ---------------------------------------------------------------------------
 # Routes: Challan detail (items) & item edit
