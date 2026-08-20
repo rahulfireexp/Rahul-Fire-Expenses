@@ -86,6 +86,10 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY", secrets.token_hex(32))
 app.permanent_session_lifetime = timedelta(days=30)
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
 
+@app.route("/health")
+def health():
+    return "OK", 200
+  
 WRITE_LOCK = threading.Lock()
 
 
