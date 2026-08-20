@@ -718,7 +718,10 @@ def login():
             session["full_name"] = user["full_name"]
             session["role"] = user["role"]
             session.permanent = True
-            return redirect(url_for("dashboard"))
+            if user["role"] == "Admin":
+                return redirect(url_for("dashboard"))
+
+            return redirect(url_for("purchase_page"))
         error = "Invalid username or password."
     return render_template_string(LOGIN_PAGE, error=error)
 
@@ -783,7 +786,50 @@ def can_modify_entry(row_created_by, row_created_at_iso):
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
+def can_view_entry(row):
+    """
+    Admin can view every record.
+    Employee can view only records created using their own login username.
+    """
+    if not row:
+        return False
 
+    if is_admin():
+        return True
+
+    return row.get("created_by", "") == current_user()
+
+
+def visible_purchase_records():
+    """
+    Admin gets all Purchase rows.
+    Employee gets only their own Purchase rows.
+    """
+    rows = get_purchases()
+
+    if is_admin():
+        return rows
+
+    return [
+        row for row in rows
+        if row.get("created_by", "") == current_user()
+    ]
+
+
+def visible_challan_records():
+    """
+    Admin gets all Challan rows.
+    Employee gets only their own Challan rows.
+    """
+    rows = get_all_challans()
+
+    if is_admin():
+        return rows
+
+    return [
+        row for row in rows
+        if row.get("created_by", "") == current_user()
+    ]
 
 # ---------------------------------------------------------------------------
 # Sites & Employees
@@ -1316,32 +1362,37 @@ def build_site_export_workbook(site_name):
 # ---------------------------------------------------------------------------
 def NAV():
     role = session.get("role", "")
-    # Base links visible to everyone
-    nav_links = f"""
-    <a href="/" style="color:#fff;text-decoration:none;margin-right:16px;">Home</a>
-    <a href="/purchase" style="color:#fff;text-decoration:none;margin-right:16px;">Purchase</a>
-    <a href="/challans" style="color:#fff;text-decoration:none;margin-right:16px;">Challans</a>
-    <a href="/site_view" style="color:#fff;text-decoration:none;margin-right:16px;">Site-wise</a>
-    """
-    # Admin-only links
+    full_name = escape(session.get("full_name", ""))
+    role_display = escape(role)
+
     if role == "Admin":
-        nav_links += f"""
-        <a href="/sites" style="color:#fff;text-decoration:none;margin-right:16px;">Sites</a>
-        <a href="/employees" style="color:#fff;text-decoration:none;margin-right:16px;">Employees</a>
-        <a href="/users" style="color:#fff;text-decoration:none;margin-right:16px;">Users</a>
-        <a href="/export" style="color:#fff;text-decoration:none;margin-right:16px;">Export</a>
+        nav_links = """
+        <a href="/">Home</a>
+        <a href="/purchase">Purchase</a>
+        <a href="/challans">Challans</a>
+        <a href="/site-view">Site-wise</a>
+        <a href="/sites">Sites</a>
+        <a href="/employees">Employees</a>
+        <a href="/users">Users</a>
+        <a href="/export">Export</a>
         """
-    # User info and logout
-    nav_links += f"""
-    <span style="color:#ffd6d6;margin-left:auto;">
-      {escape(session.get('full_name', ''))} ({escape(session.get('role', ''))}) |
-      <a href="/logout" style="color:#ffd6d6;text-decoration:none;">Logout</a>
-    </span>
-    """
+    else:
+        nav_links = """
+        <a href="/purchase">Purchase</a>
+        <a href="/challans">Challans</a>
+        """
+
     return f"""
-    <nav style="background:#1a1a1a;color:#fff;padding:0.5rem 0.75rem;display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;">
-      <div style="font-weight:700;margin-right:0.5rem;">{escape(APP_TITLE)}</div>
+    <nav>
+      <div style="font-weight:700;margin-right:0.5rem;">
+        {escape(APP_TITLE)}
+      </div>
       {nav_links}
+      <span style="color:#ffd6d6;margin-left:auto;">
+        {full_name} ({role_display})
+        |
+        <a href="/logout">Logout</a>
+      </span>
     </nav>
     """
 STYLE = """
@@ -2096,7 +2147,7 @@ def file_links_html(file1, file2):
 # Routes: Dashboard
 # ---------------------------------------------------------------------------
 @app.route("/")
-@login_required
+@admin_required
 def dashboard():
     summary = get_site_summary()
     rows = "".join(
@@ -2329,7 +2380,7 @@ def render_purchase_form_and_table():
 
     rows = ""
 
-    for r in get_purchases():
+    for r in visible_purchase_records():
         allowed, _ = can_modify_entry(
             r.get("created_by", ""),
             r.get("created_at", "")
@@ -2403,24 +2454,30 @@ def purchase_page():
     if request.method == "POST":
         action = request.form.get("action")
 
-        if action == "delete":
+                if action == "delete":
             row_id = request.form.get("id")
             row = get_purchase_row(row_id)
 
-            allowed, reason = (
-                can_modify_entry(
+            if not row:
+                msg, msg_type = "Purchase entry not found.", "error"
+
+            elif not can_view_entry(row):
+                msg, msg_type = (
+                    "You can only delete Purchase entries created by you.",
+                    "error"
+                )
+
+            else:
+                allowed, reason = can_modify_entry(
                     row.get("created_by", ""),
                     row.get("created_at", "")
                 )
-                if row
-                else (False, "Not found.")
-            )
 
-            if not allowed:
-                msg, msg_type = reason, "error"
-            else:
-                delete_purchase(row_id)
-                msg = "Entry deleted."
+                if not allowed:
+                    msg, msg_type = reason, "error"
+                else:
+                    delete_purchase(row_id)
+                    msg = "Entry deleted."
 
         else:
             f = request.form
@@ -2516,6 +2573,13 @@ def purchase_edit(row_id):
 
     if not row:
         return redirect(url_for("purchase_page"))
+    if not can_view_entry(row):
+        return page(
+            "Access Denied",
+            "<p>You can only view and edit Purchase entries created by you.</p>",
+            "Access denied.",
+            "error"
+        )
 
     allowed, reason = can_modify_entry(
         row.get("created_by", ""),
@@ -2805,7 +2869,7 @@ def challans_page():
 
     rows = ""
 
-    for c in get_all_challans():
+    for c in visible_challan_records():
         n_items = len(get_items_for_challan(c["id"]))
 
         allowed, _ = can_modify_entry(
@@ -2865,18 +2929,33 @@ def challans_page():
 def challan_delete_route(challan_id):
     challan = get_challan(challan_id)
 
-    if challan:
-        allowed, _ = can_modify_entry(
-            challan.get("created_by", ""),
-            challan.get("created_at", "")
+    if not challan:
+        return redirect(url_for("challans_page"))
+
+    if not can_view_entry(challan):
+        return page(
+            "Access Denied",
+            "<p>You can only delete Challans created by you.</p>",
+            "Access denied.",
+            "error"
         )
 
-        if allowed:
-            delete_challan(challan_id)
+    allowed, reason = can_modify_entry(
+        challan.get("created_by", ""),
+        challan.get("created_at", "")
+    )
 
+    if not allowed:
+        return page(
+            "Cannot Delete",
+            f"<p>{escape(reason)}</p><p><a href='/challans'>Back</a></p>",
+            reason,
+            "error"
+        )
+
+    delete_challan(challan_id)
     return redirect(url_for("challans_page"))
-
-
+    
 @app.route("/challans/<challan_id>/edit", methods=["GET", "POST"])
 @login_required
 def challan_edit(challan_id):
@@ -2884,6 +2963,13 @@ def challan_edit(challan_id):
 
     if not challan:
         return redirect(url_for("challans_page"))
+    if not can_view_entry(challan):
+        return page(
+            "Access Denied",
+            "<p>You can only view and edit Challans created by you.</p>",
+            "Access denied.",
+            "error"
+        )
 
     allowed, reason = can_modify_entry(
         challan.get("created_by", ""),
@@ -3028,6 +3114,13 @@ def challan_detail(challan_id):
     challan = get_challan(challan_id)
     if not challan:
         return redirect(url_for("challans_page"))
+    if not can_view_entry(challan):
+        return page(
+            "Access Denied",
+            "<p>You can only view Challans created by you.</p>",
+            "Access denied.",
+            "error"
+        )
     challan_allowed, challan_reason = can_modify_entry(challan.get("created_by", ""), challan.get("created_at", ""))
     msg, msg_type = None, "ok"
     if request.method == "POST":
@@ -3143,7 +3236,7 @@ def challan_item_edit(challan_id, item_id):
 # Routes: Site-wise View & Export
 # ---------------------------------------------------------------------------
 @app.route("/site_view")
-@login_required
+@admin_required
 def site_view():
     site = request.args.get("site", "ALL SITES")
     sites_opts = "".join(f'<option value="{escape(s)}" {"selected" if s == site else ""}>{escape(s)}</option>' for s in ["ALL SITES"] + get_sites())
