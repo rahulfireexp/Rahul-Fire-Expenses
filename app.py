@@ -135,15 +135,43 @@ def get_sheet():
 
 def get_drive_service():
     global _drive_service
+
     if _drive_service is not None:
         return _drive_service
+
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
-    from google.oauth2.service_account import Credentials
-    creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
-    creds_dict = json.loads(creds_json)
-    scopes = ["https://www.googleapis.com/auth/drive"]
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    _drive_service = build("drive", "v3", credentials=creds)
+
+    client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+    refresh_token = os.environ.get("GOOGLE_OAUTH_REFRESH_TOKEN", "").strip()
+
+    if not client_id or not client_secret or not refresh_token:
+        raise RuntimeError(
+            "Google Drive OAuth settings are missing. "
+            "Set GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, "
+            "and GOOGLE_OAUTH_REFRESH_TOKEN in Render."
+        )
+
+    credentials = Credentials(
+        token=None,
+        refresh_token=refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=client_id,
+        client_secret=client_secret,
+        scopes=["https://www.googleapis.com/auth/drive"]
+    )
+
+    credentials.refresh(Request())
+
+    _drive_service = build(
+        "drive",
+        "v3",
+        credentials=credentials,
+        cache_discovery=False
+    )
+
     return _drive_service
 
 
