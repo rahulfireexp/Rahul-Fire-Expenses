@@ -3,7 +3,7 @@ Rahul Fire Data Entry - Full Edition (Revised)
 Multi-user Google Sheets + Google Drive app with:
   - Single Main Admin (full control) + Employee accounts (restricted)
   - Employees can edit their OWN entries for up to 7 days; after that,
-    only Admin can edit. Employees can never edit others' entries.
+    only Admin  can edit. Employees can never edit others' entries.
   - Up to 2 file attachments (JPEG/JPG/PDF) per Purchase entry and per
     unique Challan, stored in Google Drive under:
       SITE_{site_name}/Purchase  or  SITE_{site_name}/Challan
