@@ -1370,20 +1370,20 @@ def NAV():
     role_display = escape(role)
 
     if role == "Admin":
-        nav_links = """
-        <a href="/">Home</a>
-        <a href="/purchase">Purchase</a>
-        <a href="/challans">Challans</a>
+        nav_links = f"""
+        <a href="{url_for('dashboard')}">Home</a>
+        <a href="{url_for('purchase_page')}">Purchase</a>
+        <a href="{url_for('challans_page')}">Challans</a>
         <a href="{url_for('site_view')}">Site-wise</a>
-        <a href="/sites">Sites</a>
-        <a href="/employees">Employees</a>
-        <a href="/users">Users</a>
-        <a href="/export">Export</a>
+        <a href="{url_for('sites_page')}">Sites</a>
+        <a href="{url_for('employees_page')}">Employees</a>
+        <a href="{url_for('users_page')}">Users</a>
+        <a href="{url_for('export_page')}">Export</a>
         """
     else:
-        nav_links = """
-        <a href="/purchase">Purchase</a>
-        <a href="/challans">Challans</a>
+        nav_links = f"""
+        <a href="{url_for('purchase_page')}">Purchase</a>
+        <a href="{url_for('challans_page')}">Challans</a>
         """
 
     return f"""
@@ -1391,14 +1391,17 @@ def NAV():
       <div style="font-weight:700;margin-right:0.5rem;">
         {escape(APP_TITLE)}
       </div>
+
       {nav_links}
+
       <span style="color:#ffd6d6;margin-left:auto;">
         {full_name} ({role_display})
         |
-        <a href="/logout">Logout</a>
+        <a href="{url_for('logout')}">Logout</a>
       </span>
     </nav>
     """
+
 STYLE = """
 <style>
 :root {
