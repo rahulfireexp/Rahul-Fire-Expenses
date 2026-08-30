@@ -1374,7 +1374,7 @@ def NAV():
         <a href="/">Home</a>
         <a href="/purchase">Purchase</a>
         <a href="/challans">Challans</a>
-        <a href="/site-view">Site-wise</a>
+        <a href="{url_for('site_view')}">Site-wise</a>
         <a href="/sites">Sites</a>
         <a href="/employees">Employees</a>
         <a href="/users">Users</a>
