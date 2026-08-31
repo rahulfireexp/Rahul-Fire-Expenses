@@ -1378,7 +1378,7 @@ def NAV():
         <a href="{url_for('sites_page')}">Sites</a>
         <a href="{url_for('employees_page')}">Employees</a>
         <a href="{url_for('users_page')}">Users</a>
-        <a href="{url_for('export_page')}">Export</a>
+        <a href="{url_for('export_route')}">Export</a>
         """
     else:
         nav_links = f"""
