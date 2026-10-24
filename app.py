@@ -89,7 +89,31 @@ app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
 @app.route("/health")
 def health():
     return "OK", 200
-  
+# Public privacy policy — no login required
+@app.route("/privacy")
+def privacy():
+    return """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport"
+              content="width=device-width, initial-scale=1">
+        <title>Privacy Policy - Rahul Fire Expenses</title>
+    </head>
+    <body style="font-family:sans-serif;max-width:700px;
+                 margin:40px auto;padding:0 20px;line-height:1.6;">
+        <h1>Privacy Policy</h1>
+
+        <p>Rahul Fire Expenses is a personal expense-tracking app.</p>
+
+        <p>The app connects to the owner's Google Drive and Google Sheets
+        to store and manage expense records and receipt files.</p>
+
+        <p>Contact: rahulfireexp@gmail.com</p>
+    </body>
+    </html>
+    """  
 WRITE_LOCK = threading.Lock()
 
 
